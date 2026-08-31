@@ -26,7 +26,10 @@ import { EmployeesPage } from './pages/employees/EmployeesPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { AuditLogsPage } from './pages/settings/AuditLogsPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
+import { PermissionsPage } from './pages/settings/PermissionsPage';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
+import { useQuery } from '@tanstack/react-query';
+import { fetchPagePermissions } from './services/permissions';
 import type { AppRole } from './types/database';
 
 function ProtectedLayout() {
@@ -42,8 +45,16 @@ function ProtectedLayout() {
   return <MainLayout />;
 }
 
-function RoleGuard({ children, allowedRoles }: { children: React.ReactNode; allowedRoles: AppRole[] }) {
+function RoleGuard({ children, allowedRoles, pagePath }: { children: React.ReactNode; allowedRoles: AppRole[]; pagePath?: string }) {
   const { profile } = useAuth();
+
+  // Fetch permissions for cashier
+  const { data: permissions = [] } = useQuery({
+    queryKey: ['page-permissions', 'CASHIER'],
+    queryFn: () => fetchPagePermissions('CASHIER'),
+    enabled: profile?.role === 'CASHIER' && !!pagePath,
+  });
+
   if (!profile || !allowedRoles.includes(profile.role)) {
     return (
       <div className="text-center py-10">
@@ -52,6 +63,20 @@ function RoleGuard({ children, allowedRoles }: { children: React.ReactNode; allo
       </div>
     );
   }
+
+  // For CASHIER: check if this specific page is enabled
+  if (profile.role === 'CASHIER' && pagePath) {
+    const perm = permissions.find((p) => p.page_path === pagePath);
+    if (perm && !perm.enabled) {
+      return (
+        <div className="text-center py-10">
+          <h1 className="text-2xl font-bold text-red-600">Access Denied</h1>
+          <p className="text-gray-500">This page has been disabled by the administrator.</p>
+        </div>
+      );
+    }
+  }
+
   return <>{children}</>;
 }
 
@@ -75,9 +100,9 @@ export default function App() {
       
       <Route path="/" element={session ? <ProtectedLayout /> : <Navigate to="/login" replace />}>
         <Route index element={<DashboardPage />} />
-        <Route path="pos" element={<RoleGuard allowedRoles={['CASHIER']}><POSPage /></RoleGuard>} />
-        <Route path="sales" element={<RoleGuard allowedRoles={['CASHIER']}><SalesHistoryPage /></RoleGuard>} />
-        <Route path="sales-returns" element={<RoleGuard allowedRoles={['CASHIER']}><SalesReturnsPage /></RoleGuard>} />
+        <Route path="pos" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/pos"><POSPage /></RoleGuard>} />
+        <Route path="sales" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/sales"><SalesHistoryPage /></RoleGuard>} />
+        <Route path="sales-returns" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/sales-returns"><SalesReturnsPage /></RoleGuard>} />
         <Route path="products" element={<RoleGuard allowedRoles={['OWNER']}><ProductsPage /></RoleGuard>} />
         <Route path="categories" element={<RoleGuard allowedRoles={['OWNER']}><CategoriesPage /></RoleGuard>} />
         <Route path="brands" element={<RoleGuard allowedRoles={['OWNER']}><BrandsPage /></RoleGuard>} />
@@ -88,15 +113,16 @@ export default function App() {
         <Route path="purchase-orders" element={<RoleGuard allowedRoles={['OWNER']}><PurchaseOrdersPage /></RoleGuard>} />
         <Route path="goods-receipts" element={<RoleGuard allowedRoles={['OWNER']}><GoodsReceiptsPage /></RoleGuard>} />
         <Route path="purchase-returns" element={<RoleGuard allowedRoles={['OWNER']}><PurchaseReturnsPage /></RoleGuard>} />
-        <Route path="customers" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']}><CustomersPage /></RoleGuard>} />
-        <Route path="khata" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']}><KhataPage /></RoleGuard>} />
+        <Route path="customers" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/customers"><CustomersPage /></RoleGuard>} />
+        <Route path="khata" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/khata"><KhataPage /></RoleGuard>} />
         <Route path="payments" element={<RoleGuard allowedRoles={['OWNER']}><PaymentsPage /></RoleGuard>} />
         <Route path="expenses" element={<RoleGuard allowedRoles={['OWNER', 'ACCOUNTANT', 'MANAGER']}><ExpensesPage /></RoleGuard>} />
         <Route path="accounting" element={<RoleGuard allowedRoles={['OWNER']}><AccountingPage /></RoleGuard>} />
-        <Route path="reports" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']}><ReportsPage /></RoleGuard>} />
+        <Route path="reports" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/reports"><ReportsPage /></RoleGuard>} />
         <Route path="employees" element={<RoleGuard allowedRoles={['OWNER', 'MANAGER']}><EmployeesPage /></RoleGuard>} />
-        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="notifications" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/notifications"><NotificationsPage /></RoleGuard>} />
         <Route path="settings" element={<RoleGuard allowedRoles={['OWNER']}><SettingsPage /></RoleGuard>} />
+        <Route path="permissions" element={<RoleGuard allowedRoles={['OWNER']}><PermissionsPage /></RoleGuard>} />
         <Route path="audit-logs" element={<RoleGuard allowedRoles={['OWNER']}><AuditLogsPage /></RoleGuard>} />
       </Route>
 

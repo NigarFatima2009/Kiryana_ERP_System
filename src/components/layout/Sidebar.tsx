@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard, ShoppingCart, Package, Warehouse, Truck, Users, CreditCard,
   Receipt, BarChart3, Settings, Bell, Shield, ChevronDown, ChevronRight,
   Store, Tags, Boxes, ArrowLeftRight, FileText, UserCircle, ClipboardList,
   Banknote, BookOpen, AlertTriangle, PackageX, HandCoins, CircleDollarSign,
-  ScrollText, LogOut, PanelLeftClose, PanelLeftOpen,
+  ScrollText, LogOut, PanelLeftClose, PanelLeftOpen, Lock,
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
+import { fetchPagePermissions } from '../../services/permissions';
 
 interface NavItem {
   label: string;
@@ -128,6 +130,7 @@ const navigation: NavGroup[] = [
     icon: <Settings size={20} />,
     items: [
       { label: 'Settings', path: '/settings', icon: <Settings size={18} /> },
+      { label: 'Page Permissions', path: '/permissions', icon: <Lock size={18} /> },
       { label: 'Audit Logs', path: '/audit-logs', icon: <Shield size={18} /> },
     ],
     roles: ['OWNER'],
@@ -148,13 +151,40 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     return initial;
   });
 
+  // Fetch page permissions for cashier role
+  const { data: permissions = [] } = useQuery({
+    queryKey: ['page-permissions', 'CASHIER'],
+    queryFn: () => fetchPagePermissions('CASHIER'),
+  });
+
+  // Build a set of enabled paths for quick lookup
+  const enabledPaths = new Set(
+    permissions.filter((p) => p.enabled).map((p) => p.page_path)
+  );
+
   const toggleGroup = (label: string) => {
     setExpandedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
   const isVisible = (group: NavGroup) => {
     if (!group.roles) return true;
-    return profile && group.roles.includes(profile.role);
+    if (!profile) return false;
+    if (!group.roles.includes(profile.role)) return false;
+
+    // For CASHIER: check page permissions
+    if (profile.role === 'CASHIER') {
+      // Show group if at least one of its pages is enabled
+      const hasEnabledPage = group.items.some((item) => enabledPaths.has(item.path));
+      return hasEnabledPage;
+    }
+
+    return true;
+  };
+
+  // Filter items within a group based on permissions
+  const getVisibleItems = (group: NavGroup) => {
+    if (profile?.role !== 'CASHIER') return group.items;
+    return group.items.filter((item) => enabledPaths.has(item.path));
   };
 
   const isActive = (path: string) => {
@@ -213,7 +243,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                   </button>
                   {expandedGroups[group.label] && (
                     <div className="ml-4 space-y-0.5 border-l border-gray-200 pl-2">
-                      {group.items.map((item) => (
+                      {getVisibleItems(group).map((item) => (
                         <Link
                           key={item.path}
                           to={item.path}
@@ -234,7 +264,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                   <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none z-50 whitespace-nowrap">
                     {group.label}
                   </div>
-                  {group.items.map((item) => (
+                  {getVisibleItems(group).map((item) => (
                     <Link
                       key={item.path}
                       to={item.path}
