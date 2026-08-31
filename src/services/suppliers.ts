@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import { audit } from './audit';
 import type { Supplier, SupplierTransaction, SupplierPayment } from '../types/database';
 
@@ -9,7 +10,8 @@ export async function fetchSuppliers(params?: { search?: string; active?: boolea
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { data: data as Supplier[], count: count || 0 };
+  const result = { data: data as Supplier[], count: count || 0 };
+  return offlineQuery('suppliers', async () => result);
 }
 
 export async function fetchSupplier(id: string) {

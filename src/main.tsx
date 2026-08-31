@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './lib/auth';
 import { ToastProvider } from './components/ui/Toast';
 import { OnlineStatus } from './components/ui/OnlineStatus';
-import { setupOfflineCache } from './lib/offlineCache';
+
 import App from './App';
 import './index.css';
 
@@ -18,9 +18,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-// Setup offline cache persistence
-setupOfflineCache(queryClient);
 
 // Register service worker for offline SPA access
 if ('serviceWorker' in navigator) {

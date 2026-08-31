@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import type { DashboardStats } from '../types/database';
 
 export async function getDashboardStats(): Promise<DashboardStats> {
@@ -129,7 +130,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       .select('quantity, average_cost');
     const inventoryValue = (invData || []).reduce((sum: number, inv: any) => sum + Number(inv.quantity) * Number(inv.average_cost), 0);
 
-    return {
+    const stats = {
       todaySales: totalSales,
       todayPurchases,
       todayExpenses: totalExpenses,
@@ -143,6 +144,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       lowStockProducts: lowStockCount,
       expiringProducts: expiringCount || 0,
     };
+    return offlineQuery('dashboard-stats', async () => stats);
   } catch (error) {
     console.error('Error fetching dashboard stats:', error);
     return {

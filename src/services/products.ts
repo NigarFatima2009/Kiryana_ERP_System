@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import { apiGet, apiGetOne, apiInsert, apiUpdate, apiDelete, QueryOptions } from './api';
+import { offlineQuery } from '../lib/offlineQuery';
 import type { Product, ProductWithRelations, Category, Brand } from '../types/database';
 
 // ==================== PRODUCTS ====================
@@ -30,7 +30,8 @@ export async function fetchProducts(params?: {
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { data: data as ProductWithRelations[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: data as ProductWithRelations[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`products-${page}-${params?.search || ''}`, async () => result);
 }
 
 export async function fetchProduct(id: string) {
@@ -77,7 +78,7 @@ export async function deleteProduct(id: string) {
 export async function fetchCategories() {
   const { data, error } = await supabase.from('categories').select('*').eq('active', true).order('name');
   if (error) throw error;
-  return data as Category[];
+  return offlineQuery('categories', async () => data as Category[]);
 }
 
 export async function createCategory(name: string) {
@@ -102,7 +103,7 @@ export async function deleteCategory(id: string) {
 export async function fetchBrands() {
   const { data, error } = await supabase.from('brands').select('*').eq('active', true).order('name');
   if (error) throw error;
-  return data as Brand[];
+  return offlineQuery('brands', async () => data as Brand[]);
 }
 
 export async function createBrand(name: string) {

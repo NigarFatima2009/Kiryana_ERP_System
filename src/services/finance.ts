@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import { audit } from './audit';
 import type { Expense, ExpenseCategory, Account, JournalEntry, JournalEntryLine } from '../types/database';
 
@@ -33,7 +34,8 @@ export async function fetchExpenses(params?: { page?: number; pageSize?: number;
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { data: data as (Expense & { expense_categories: { name: string; account_code: string } })[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: data as (Expense & { expense_categories: { name: string; account_code: string } })[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`expenses-${page}`, async () => result);
 }
 
 export async function createExpense(expense: {
@@ -80,7 +82,7 @@ export async function createExpense(expense: {
 export async function fetchExpenseCategories() {
   const { data, error } = await supabase.from('expense_categories').select('*').eq('active', true).order('name');
   if (error) throw error;
-  return data as ExpenseCategory[];
+  return offlineQuery('expense-categories', async () => data as ExpenseCategory[]);
 }
 
 // ==================== ACCOUNTING ====================
@@ -88,7 +90,7 @@ export async function fetchExpenseCategories() {
 export async function fetchAccounts() {
   const { data, error } = await supabase.from('accounts').select('*').eq('active', true).order('code');
   if (error) throw error;
-  return data as Account[];
+  return offlineQuery('accounts', async () => data as Account[]);
 }
 
 export async function fetchJournalEntries(params?: { page?: number; pageSize?: number; reference_type?: string }) {

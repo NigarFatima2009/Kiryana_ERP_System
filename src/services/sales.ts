@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import { generateOrderNumber } from '../utils/helpers';
 import { audit } from './audit';
 import type { Sale, SaleItem, SalePayment, CartItem, PaymentEntry } from '../types/database';
@@ -238,7 +239,8 @@ export async function fetchSales(params?: { page?: number; pageSize?: number; cu
     customers: s.customer_id ? { name: custMap.get(s.customer_id) || 'Unknown' } : null,
   }));
 
-  return { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`sales-${page}`, async () => result);
 }
 
 export async function fetchSale(id: string) {

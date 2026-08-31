@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import { audit } from './audit';
 import type { Customer, CustomerTransaction, CustomerPayment } from '../types/database';
 
@@ -9,7 +10,8 @@ export async function fetchCustomers(params?: { search?: string; active?: boolea
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { data: data as Customer[], count: count || 0 };
+  const result = { data: data as Customer[], count: count || 0 };
+  return offlineQuery('customers', async () => result);
 }
 
 export async function fetchCustomer(id: string) {

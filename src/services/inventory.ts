@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import type { Inventory, InventoryBatch, InventoryMovement } from '../types/database';
 
 // ==================== INVENTORY ====================
@@ -69,7 +70,8 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
     });
   }
 
-  return { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`inventory-${page}`, async () => result);
 }
 
 export async function fetchBatches(params?: { product_id?: string; expiringSoon?: boolean }) {
@@ -102,11 +104,8 @@ export async function fetchBatches(params?: { product_id?: string; expiringSoon?
 
   const productMap = new Map((products || []).map((p) => [p.id, p]));
 
-  return batchData
-    .map((b) => ({
-      ...b,
-      products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' },
-    }));
+  const result = batchData.map((b) => ({ ...b, products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' } }));
+  return offlineQuery('batches', async () => result);
 }
 
 export async function fetchStockMovements(params?: { product_id?: string; movement_type?: string; page?: number; pageSize?: number }) {
@@ -146,5 +145,6 @@ export async function fetchStockMovements(params?: { product_id?: string; moveme
       products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
     }));
 
-  return { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`inventory-${page}`, async () => result);
 }

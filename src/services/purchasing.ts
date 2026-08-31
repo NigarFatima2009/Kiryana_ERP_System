@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { offlineQuery } from '../lib/offlineQuery';
 import { generateOrderNumber } from '../utils/helpers';
 import { audit } from './audit';
 import type { PurchaseOrder, PurchaseOrderItem, GoodsReceipt, GoodsReceiptItem } from '../types/database';
@@ -27,7 +28,8 @@ export async function fetchPurchaseOrders(params?: {
 
   const { data, error, count } = await query;
   if (error) throw error;
-  return { data: data as (PurchaseOrder & { suppliers: { name: string; company: string | null } })[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: data as (PurchaseOrder & { suppliers: { name: string; company: string | null } })[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`purchase-orders-${page}`, async () => result);
 }
 
 export async function fetchPurchaseOrder(id: string) {
@@ -168,7 +170,8 @@ export async function fetchGoodsReceipts(params?: { supplier_id?: string; page?:
     return { ...receipt, payment_status: paymentStatus, paid_amount: paidAmount, outstanding };
   });
 
-  return { data: enriched as GoodsReceiptWithStatus[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  const result = { data: enriched as GoodsReceiptWithStatus[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  return offlineQuery(`goods-receipts-${page}`, async () => result);
 }
 
 export async function fetchGoodsReceipt(id: string) {

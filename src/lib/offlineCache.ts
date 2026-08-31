@@ -1,116 +1,79 @@
-import { persistQueryClient } from '@tanstack/react-query-persist-client';
-import { type QueryClient } from '@tanstack/react-query';
-
-const FIVE_MINUTES = 1000 * 60 * 5;
-const ONE_DAY = 1000 * 60 * 60 * 24;
-
 /**
- * Cache keys that should be persisted for offline access.
- * These are the core data sets needed to browse the app offline.
+ * Simple offline data cache using localStorage.
+ * Saves query results after each successful fetch.
+ * Provides cached data when offline.
  */
-const OFFLINE_CACHE_KEYS: string[][] = [
-  ['products'],
-  ['categories'],
-  ['brands'],
-  ['inventory'],
-  ['inventory-all'],
-  ['suppliers'],
-  ['customers'],
-  ['expenses'],
-];
 
-/**
- * Custom entry storage that wraps localStorage with size safety.
- * If localStorage is full, it evicts old entries gracefully.
- */
-const safeLocalStorage = {
-  getItem: (key: string): string | null => {
+const CACHE_PREFIX = 'erp_data_';
+const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+/** Save data to offline cache */
+export function saveToCache<T>(key: string, data: T): void {
+  try {
+    const entry: CacheEntry<T> = { data, timestamp: Date.now() };
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
+  } catch {
+    // localStorage full — clear old cache entries
     try {
-      return localStorage.getItem(key);
+      clearOldCache();
+      const entry: CacheEntry<T> = { data, timestamp: Date.now() };
+      localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
     } catch {
+      console.warn('[OfflineCache] Cannot write to localStorage');
+    }
+  }
+}
+
+/** Get data from offline cache */
+export function getFromCache<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return null;
+    const entry: CacheEntry<T> = JSON.parse(raw);
+    // Check if cache is expired
+    if (Date.now() - entry.timestamp > CACHE_EXPIRY) {
+      localStorage.removeItem(CACHE_PREFIX + key);
       return null;
     }
-  },
-  setItem: (key: string, value: string): void => {
-    try {
-      localStorage.setItem(key, value);
-    } catch {
-      // localStorage full — try to make space by clearing old cache
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove specific cache entry */
+export function removeFromCache(key: string): void {
+  localStorage.removeItem(CACHE_PREFIX + key);
+}
+
+/** Clear all old cache entries */
+function clearOldCache(): void {
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(CACHE_PREFIX)) {
       try {
-        // Remove the oldest entries to make room
-        const keys: string[] = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k?.startsWith('reactQuery')) keys.push(k);
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const entry: CacheEntry<unknown> = JSON.parse(raw);
+          if (Date.now() - entry.timestamp > CACHE_EXPIRY) {
+            keysToRemove.push(k);
+          }
         }
-        // Remove the first half
-        keys.slice(0, Math.ceil(keys.length / 2)).forEach((k) => localStorage.removeItem(k));
-        // Retry
-        localStorage.setItem(key, value);
       } catch {
-        console.warn('[OfflineCache] localStorage full, skipping cache write');
+        keysToRemove.push(k);
       }
     }
-  },
-  removeItem: (key: string): void => {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // ignore
-    }
-  },
-};
+  }
+  keysToRemove.forEach((k) => localStorage.removeItem(k));
+}
 
-/**
- * Set up React Query persist client.
- * Call this once when the app initializes.
- */
-export function setupOfflineCache(queryClient: QueryClient): void {
-  persistQueryClient({
-    queryClient,
-    persister: {
-      persistClient: async (client) => {
-        // Only persist offline-relevant cache entries
-        const filteredQueries = client.clientState.queries.filter((q) => {
-          const key = q.queryKey as unknown[];
-          // Check if this query key matches any offline cache key
-          return OFFLINE_CACHE_KEYS.some((offlineKey) => {
-            return offlineKey.every((part, i) => key[i] === part);
-          });
-        });
-
-        const filteredClient = {
-          ...client,
-          clientState: {
-            ...client.clientState,
-            queries: filteredQueries,
-          },
-        };
-
-        safeLocalStorage.setItem(
-          'erp-offline-cache',
-          JSON.stringify(filteredClient)
-        );
-      },
-      restoreClient: async () => {
-        try {
-          const raw = safeLocalStorage.getItem('erp-offline-cache');
-          if (!raw) return undefined;
-          return JSON.parse(raw);
-        } catch {
-          return undefined;
-        }
-      },
-      removeClient: async (): Promise<void> => {
-        safeLocalStorage.removeItem('erp-offline-cache');
-      },
-    },
-    maxAge: ONE_DAY,
-    dehydrateOptions: {
-      shouldDehydrateQuery: (query) => {
-        // Only persist successful queries (not loading/error states)
-        return query.state.status === 'success';
-      },
-    },
-  });
+/** Check if navigator is online */
+export function isOnline(): boolean {
+  return navigator.onLine;
 }
