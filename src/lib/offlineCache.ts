@@ -1,6 +1,5 @@
-import { persistQueryClient, type PersistedClient, type Delimiter } from '@tanstack/react-query-persist-client';
+import { persistQueryClient } from '@tanstack/react-query-persist-client';
 import { type QueryClient } from '@tanstack/react-query';
-import { localStorageEntryStorage } from '@tanstack/react-query-persist-client';
 
 const FIVE_MINUTES = 1000 * 60 * 5;
 const ONE_DAY = 1000 * 60 * 60 * 24;
@@ -9,7 +8,7 @@ const ONE_DAY = 1000 * 60 * 60 * 24;
  * Cache keys that should be persisted for offline access.
  * These are the core data sets needed to browse the app offline.
  */
-const OFFLINE_CACHE_KEYS: (string | Delimiter)[][] = [
+const OFFLINE_CACHE_KEYS: string[][] = [
   ['products'],
   ['categories'],
   ['brands'],
@@ -70,20 +69,21 @@ export function setupOfflineCache(queryClient: QueryClient): void {
   persistQueryClient({
     queryClient,
     persister: {
-      persistClient: async (client: PersistedClient) => {
+      persistClient: async (client) => {
         // Only persist offline-relevant cache entries
+        const filteredQueries = client.clientState.queries.filter((q) => {
+          const key = q.queryKey as unknown[];
+          // Check if this query key matches any offline cache key
+          return OFFLINE_CACHE_KEYS.some((offlineKey) => {
+            return offlineKey.every((part, i) => key[i] === part);
+          });
+        });
+
         const filteredClient = {
           ...client,
-          buster: client.buster,
-          queryCache: {
-            ...client.queryCache,
-            queries: client.queryCache.queries.filter((q) => {
-              const key = q.queryKey;
-              // Check if this query key matches any offline cache key
-              return OFFLINE_CACHE_KEYS.some((offlineKey) => {
-                return offlineKey.every((part, i) => key[i] === part);
-              });
-            }),
+          clientState: {
+            ...client.clientState,
+            queries: filteredQueries,
           },
         };
 
@@ -92,11 +92,11 @@ export function setupOfflineCache(queryClient: QueryClient): void {
           JSON.stringify(filteredClient)
         );
       },
-      restoreClient: async (): Promise<PersistedClient | undefined> => {
+      restoreClient: async () => {
         try {
           const raw = safeLocalStorage.getItem('erp-offline-cache');
           if (!raw) return undefined;
-          return JSON.parse(raw) as PersistedClient;
+          return JSON.parse(raw);
         } catch {
           return undefined;
         }
