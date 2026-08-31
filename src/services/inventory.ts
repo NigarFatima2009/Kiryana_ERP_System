@@ -22,12 +22,13 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
     return { data: [], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
   }
 
-  // Step 2: Fetch products for these inventory items
+  // Step 2: Fetch products for these inventory items (only active products)
   const productIds = inventoryData.map((i) => i.product_id);
   const { data: products } = await supabase
     .from('products')
-    .select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id')
-    .in('id', productIds);
+    .select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id, active')
+    .in('id', productIds)
+    .eq('active', true); // Only show active products
 
   // Step 3: Fetch categories
   const categoryIds = (products || []).map((p) => p.category_id).filter(Boolean);
@@ -40,11 +41,13 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
   const productMap = new Map((products || []).map((p) => [p.id, p]));
   const categoryMap = new Map((categories || []).map((c) => [c.id, c.name]));
 
-  let merged = inventoryData.map((inv) => {
-    const product = productMap.get(inv.product_id) || null;
-    const categoryName = product?.category_id ? categoryMap.get(product.category_id) : null;
-    return { ...inv, products: product ? { ...product, categories: categoryName ? { name: categoryName } : null } : null };
-  });
+  let merged = inventoryData
+    .filter((inv) => productMap.has(inv.product_id)) // Only include inventory for active products
+    .map((inv) => {
+      const product = productMap.get(inv.product_id) || null;
+      const categoryName = product?.category_id ? categoryMap.get(product.category_id) : null;
+      return { ...inv, products: product ? { ...product, categories: categoryName ? { name: categoryName } : null } : null };
+    });
 
   // Step 5: Apply search filter
   if (params?.search) {
@@ -74,7 +77,6 @@ export async function fetchBatches(params?: { product_id?: string; expiringSoon?
   let query = supabase
     .from('inventory_batches')
     .select('*')
-    .gt('remaining_quantity', 0)
     .order('expiry_date', { ascending: true, nullsFirst: true });
 
   if (params?.product_id) {
@@ -91,19 +93,20 @@ export async function fetchBatches(params?: { product_id?: string; expiringSoon?
 
   if (!batchData || batchData.length === 0) return [];
 
-  // Step 2: Fetch products for batches
+  // Step 2: Fetch products for batches (include all — even deactivated)
   const productIds = [...new Set(batchData.map((b) => b.product_id))];
   const { data: products } = await supabase
     .from('products')
-    .select('id, name, sku')
+    .select('id, name, sku, active')
     .in('id', productIds);
 
   const productMap = new Map((products || []).map((p) => [p.id, p]));
 
-  return batchData.map((b) => ({
-    ...b,
-    products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' },
-  }));
+  return batchData
+    .map((b) => ({
+      ...b,
+      products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' },
+    }));
 }
 
 export async function fetchStockMovements(params?: { product_id?: string; movement_type?: string; page?: number; pageSize?: number }) {
@@ -128,19 +131,20 @@ export async function fetchStockMovements(params?: { product_id?: string; moveme
     return { data: [], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
   }
 
-  // Fetch products
+  // Fetch products (include all — even deactivated for history)
   const productIds = [...new Set(movementData.map((m) => m.product_id))];
   const { data: products } = await supabase
     .from('products')
-    .select('id, name, sku')
+    .select('id, name, sku, active')
     .in('id', productIds);
 
   const productMap = new Map((products || []).map((p) => [p.id, p]));
 
-  const merged = movementData.map((m) => ({
-    ...m,
-    products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
-  }));
+  const merged = movementData
+    .map((m) => ({
+      ...m,
+      products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
+    }));
 
   return { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
 }

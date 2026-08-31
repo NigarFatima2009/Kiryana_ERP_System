@@ -161,6 +161,8 @@ export function EmployeesPage() {
   const mutation = useMutation({
     mutationFn: () => inviteEmployee({ email, full_name: fullName, role: 'CASHIER' }),
     onSuccess: async (result) => {
+      // Wait a moment for the database to update before refetching
+      await new Promise(resolve => setTimeout(resolve, 500));
       await queryClient.refetchQueries({ queryKey: ['employees'] });
       setGeneratedPassword(result.tempPassword);
       toast('success', `Cashier created! Share the credentials below.`);

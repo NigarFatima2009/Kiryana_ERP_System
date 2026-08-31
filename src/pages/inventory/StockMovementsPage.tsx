@@ -29,8 +29,13 @@ export function StockMovementsPage() {
   const columns: Column<Record<string, unknown>>[] = [
     { key: 'date', header: 'Date', render: (row) => formatDateTime(row.created_at as string) },
     { key: 'product', header: 'Product', render: (row) => {
-      const p = row.products as { name: string; sku: string } | null;
-      return <span className="font-medium">{p?.name || '-'} <span className="text-xs text-gray-400">({p?.sku})</span></span>;
+      const p = row.products as { name: string; sku: string; active?: boolean } | null;
+      return (
+        <span className="font-medium">
+          {p?.name || '-'} <span className="text-xs text-gray-400">({p?.sku})</span>
+          {p?.active === false && <span className="ml-1 text-xs text-gray-400">(Removed)</span>}
+        </span>
+      );
     }},
     { key: 'movement_type', header: 'Type', render: (row) => (
       <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${typeColors[row.movement_type as string] || 'bg-gray-100'}`}>

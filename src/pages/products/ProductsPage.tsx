@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Search, Edit2, Trash2, Package } from 'lucide-react';
 import { fetchProducts, createProduct, updateProduct, deleteProduct, fetchCategories, fetchBrands } from '../../services/products';
+import { supabase } from '../../lib/supabase';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
@@ -35,7 +36,7 @@ export function ProductsPage() {
         queryClient.refetchQueries({ queryKey: ['pos-products'] }),
         queryClient.refetchQueries({ queryKey: ['dashboard-stats'] }),
       ]);
-      toast('success', 'Product deactivated');
+      toast('success', 'Product removed');
     },
     onError: (e: Error) => toast('error', e.message),
   });
@@ -61,7 +62,7 @@ export function ProductsPage() {
     { key: 'actions', header: '', render: (row) => (
       <div className="flex gap-2">
         <button onClick={(e) => { e.stopPropagation(); setEditItem(row as unknown as ProductWithRelations); setShowForm(true); }} className="rounded p-1 hover:bg-gray-100"><Edit2 size={16} /></button>
-        <button onClick={(e) => { e.stopPropagation(); if (confirm('Deactivate this product?')) deleteMutation.mutate(row.id as string); }} className="rounded p-1 text-red-500 hover:bg-red-50"><Trash2 size={16} /></button>
+        <button onClick={(e) => { e.stopPropagation(); if (confirm('Remove this product from the list?')) deleteMutation.mutate(row.id as string); }} className="rounded p-1 text-red-500 hover:bg-red-50"><Trash2 size={16} /></button>
       </div>
     )},
   ];
@@ -121,6 +122,7 @@ function ProductForm({ isOpen, onClose, editItem, categories, brands }: {
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [barcodeError, setBarcodeError] = useState('');
 
   const [form, setForm] = useState({
     name: '',
@@ -138,7 +140,34 @@ function ProductForm({ isOpen, onClose, editItem, categories, brands }: {
     expiry_tracking: false,
   });
 
-  useState(() => {
+  // Check for duplicate barcode
+  const checkBarcodeExists = async (barcode: string) => {
+    if (!barcode || editItem?.barcode === barcode) {
+      setBarcodeError('');
+      return;
+    }
+    
+    try {
+      const { data } = await supabase
+        .from('products')
+        .select('id')
+        .eq('barcode', barcode)
+        .single();
+      
+      if (data) {
+        setBarcodeError('This barcode already exists. Use a unique barcode.');
+      } else {
+        setBarcodeError('');
+      }
+    } catch {
+      // Product not found, barcode is unique
+      setBarcodeError('');
+    }
+  };
+
+  // Reset form every time modal opens
+  useEffect(() => {
+    if (!isOpen) return;
     if (editItem) {
       setForm({
         name: editItem.name,
@@ -155,35 +184,44 @@ function ProductForm({ isOpen, onClose, editItem, categories, brands }: {
         minimum_stock: Number(editItem.minimum_stock),
         expiry_tracking: editItem.expiry_tracking,
       });
+    } else {
+      setForm({
+        name: '',
+        sku: '',
+        barcode: '',
+        category_id: '',
+        brand_id: '',
+        unit: 'pcs',
+        purchase_price: 0,
+        selling_price: 0,
+        wholesale_price: 0,
+        tax_rate: 0,
+        reorder_level: 0,
+        minimum_stock: 0,
+        expiry_tracking: false,
+      });
     }
-  });
-
-  // Reset form when editItem changes
-  if (editItem && form.name !== editItem.name && !form.name) {
-    setForm({
-      name: editItem.name,
-      sku: editItem.sku,
-      barcode: editItem.barcode || '',
-      category_id: editItem.category_id || '',
-      brand_id: editItem.brand_id || '',
-      unit: editItem.unit,
-      purchase_price: Number(editItem.purchase_price),
-      selling_price: Number(editItem.selling_price),
-      wholesale_price: Number(editItem.wholesale_price),
-      tax_rate: Number(editItem.tax_rate),
-      reorder_level: Number(editItem.reorder_level),
-      minimum_stock: Number(editItem.minimum_stock),
-      expiry_tracking: editItem.expiry_tracking,
-    });
-  }
+  }, [isOpen, editItem]);
 
   const mutation = useMutation({
     mutationFn: async () => {
-      // Convert empty strings to null for UUID fields
+      // Check for barcode duplicate before submitting
+      if (form.barcode && form.barcode !== editItem?.barcode) {
+        const { data } = await supabase
+          .from('products')
+          .select('id')
+          .eq('barcode', form.barcode)
+          .single();
+        
+        if (data) throw new Error('This barcode already exists. Use a unique barcode.');
+      }
+
+      // Convert empty strings to null for UUID fields and barcode
       const formData = {
         ...form,
         category_id: form.category_id || null,
         brand_id: form.brand_id || null,
+        barcode: form.barcode || null, // Convert empty barcode to null to avoid unique constraint issues
       };
       if (editItem) {
         return updateProduct(editItem.id, formData);
@@ -202,7 +240,14 @@ function ProductForm({ isOpen, onClose, editItem, categories, brands }: {
       toast('success', editItem ? 'Product updated' : 'Product created');
       onClose();
     },
-    onError: (e: Error) => toast('error', e.message),
+    onError: (e: Error) => {
+      // Parse error message for better user experience
+      let errorMsg = e.message;
+      if (errorMsg.includes('duplicate key')) {
+        errorMsg = 'This barcode already exists. Use a unique barcode.';
+      }
+      toast('error', errorMsg);
+    },
   });
 
   return (
@@ -231,7 +276,17 @@ function ProductForm({ isOpen, onClose, editItem, categories, brands }: {
         </div>
         <div>
           <label className="label">Barcode</label>
-          <input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="input-field" placeholder="Optional barcode" />
+          <input 
+            value={form.barcode} 
+            onChange={(e) => {
+              setForm({ ...form, barcode: e.target.value });
+              checkBarcodeExists(e.target.value);
+            }}
+            className={`input-field ${barcodeError ? 'border-red-500' : ''}`}
+            placeholder="Optional barcode (leave empty if not available)" 
+          />
+          <p className="mt-1 text-xs text-gray-500">Must be unique if provided. Leave empty to skip.</p>
+          {barcodeError && <p className="mt-1 text-xs text-red-500">{barcodeError}</p>}
         </div>
         <div>
           <label className="label">Category</label>

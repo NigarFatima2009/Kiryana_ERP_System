@@ -5,6 +5,8 @@ export async function fetchEmployees() {
   const { data, error } = await supabase
     .from('profiles')
     .select('*')
+    .in('role', ['OWNER', 'MANAGER', 'CASHIER'])
+    .eq('active', true)
     .order('full_name');
   if (error) throw error;
   return data as (Profile & { email: string | null })[];
@@ -71,53 +73,39 @@ export async function setEmployeePassword(userId: string, newPassword: string, e
 }
 
 export async function inviteEmployee({ email, full_name, role }: { email: string; full_name: string; role: AppRole }) {
-  // Generate a temporary password
   const tempPassword = Math.random().toString(36).substring(2, 10) +
                        Math.random().toString(36).substring(2, 6) + 'A1!';
 
   try {
-    // Get current owner session BEFORE any auth changes
-    const { data: { session: ownerSession } } = await supabase.auth.getSession();
-    if (!ownerSession) throw new Error('Not authenticated');
-
-    // Sign up the new user
-    // Note: Supabase requires email confirmation. The user will receive a confirmation email.
-    const { data: authData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password: tempPassword,
-      options: {
-        data: { full_name, role },
-        emailRedirectTo: window.location.origin + '/login',
-      },
-    });
-
-    if (signUpError) throw signUpError;
-    if (!authData.user) throw new Error('Failed to create user');
-
-    // Update the profile with email and role
-    const { error: updateError } = await supabase
+    // Create profile directly in the database
+    const { data, error: profileError } = await supabase
       .from('profiles')
-      .update({ email, role })
-      .eq('id', authData.user.id);
+      .insert({
+        full_name,
+        email,
+        role,
+        active: true,
+      })
+      .select()
+      .single();
 
-    if (updateError) throw updateError;
-
-    // Restore the owner session
-    const { error: sessionError } = await supabase.auth.setSession({
-      access_token: ownerSession.access_token,
-      refresh_token: ownerSession.refresh_token,
-    });
-
-    if (sessionError) throw sessionError;
+    if (profileError) {
+      if (profileError.code === '23505') {
+        throw new Error('An employee with this name already exists');
+      }
+      throw profileError;
+    }
 
     return {
+      id: data?.id,
       email,
       tempPassword,
       role,
-      message: `Cashier invited successfully!\n\nSteps:\n1. Cashier will receive a confirmation email\n2. They click the confirmation link\n3. Then login with:\n\nEmail: ${email}\nPassword: ${tempPassword}\n\nAfter login, they can change their password.`,
+      full_name,
+      message: `Cashier added!\n\nTo let them login, create their auth account:\n1. Go to Supabase Dashboard → Authentication → Users\n2. Click 'Add user'\n3. Email: ${email}\n4. Password: ${tempPassword}\n5. Click Save\n\nShare these credentials:\nEmail: ${email}\nPassword: ${tempPassword}`,
     };
   } catch (err: any) {
     console.error('Failed to invite employee:', err);
-    throw new Error(`Failed to invite employee: ${err.message}`);
+    throw new Error(err.message || 'Failed to invite employee');
   }
 }

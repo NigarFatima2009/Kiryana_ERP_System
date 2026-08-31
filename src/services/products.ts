@@ -7,7 +7,6 @@ import type { Product, ProductWithRelations, Category, Brand } from '../types/da
 export async function fetchProducts(params?: {
   search?: string;
   category_id?: string;
-  active?: boolean;
   page?: number;
   pageSize?: number;
 }) {
@@ -18,7 +17,7 @@ export async function fetchProducts(params?: {
 
   let query = supabase
     .from('products')
-    .select('*, categories!products_category_id_fkey(*), brands!products_brand_id_fkey(*)', { count: 'exact' })
+    .select('*, categories!products_category_id_fkey(*), brands!products_brand_id_fkey(*), inventory(quantity, average_cost)', { count: 'exact' })
     .order('name')
     .range(from, to);
 
@@ -27,9 +26,6 @@ export async function fetchProducts(params?: {
   }
   if (params?.category_id) {
     query = query.eq('category_id', params.category_id);
-  }
-  if (params?.active !== undefined) {
-    query = query.eq('active', params.active);
   }
 
   const { data, error, count } = await query;
@@ -62,7 +58,17 @@ export async function updateProduct(id: string, updates: Partial<Product>) {
 }
 
 export async function deleteProduct(id: string) {
-  const { error } = await supabase.from('products').update({ active: false }).eq('id', id);
+  // Delete inventory batches for this product
+  await supabase.from('inventory_batches').delete().eq('product_id', id);
+  
+  // Delete inventory movements for this product
+  await supabase.from('inventory_movements').delete().eq('product_id', id);
+  
+  // Delete inventory record for this product
+  await supabase.from('inventory').delete().eq('product_id', id);
+  
+  // Finally, delete the product itself
+  const { error } = await supabase.from('products').delete().eq('id', id);
   if (error) throw error;
 }
 

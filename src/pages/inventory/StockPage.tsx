@@ -23,7 +23,7 @@ export function StockPage() {
 
       // Get all products
       const productIds = inv.map((i) => i.product_id);
-      const { data: products } = await supabase.from('products').select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id').in('id', productIds);
+      const { data: products } = await supabase.from('products').select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id, active').in('id', productIds);
 
       // Get categories
       const catIds = (products || []).map((p) => p.category_id).filter(Boolean);
@@ -37,6 +37,7 @@ export function StockPage() {
         return {
           ...i,
           products: p ? { ...p, categories: p.category_id ? { name: cMap.get(p.category_id) || '' } : null } : null,
+          product_active: p?.active ?? true,
         };
       });
     },

@@ -135,7 +135,7 @@ export async function completeSale(params: {
     }
     const { error: movementError } = await supabase.from('inventory_movements').insert(movementData);
     if (movementError) {
-      console.error('Failed to create stock movement:', movementError);
+      throw new Error(`Failed to create stock movement: ${movementError.message}`);
     }
 
     await supabase.from('sale_items').insert({
@@ -151,7 +151,7 @@ export async function completeSale(params: {
 
     const { error: invError } = await supabase.from('inventory').update({ quantity: currentQty - deductionQty }).eq('product_id', item.product.id);
     if (invError) {
-      console.error('Failed to update inventory:', invError);
+      throw new Error(`Failed to update inventory for ${item.product.name}: ${invError.message}`);
     }
   }
 

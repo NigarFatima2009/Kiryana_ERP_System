@@ -27,8 +27,13 @@ export function BatchesPage() {
 
   const columns: Column<Record<string, unknown>>[] = [
     { key: 'product', header: 'Product', render: (row) => {
-      const p = row.products as { name: string; sku: string } | null;
-      return <span className="font-medium">{p?.name || '-'}</span>;
+      const p = row.products as { name: string; sku: string; active?: boolean } | null;
+      return (
+        <span className="font-medium">
+          {p?.name || '-'}
+          {p?.active === false && <span className="ml-1 text-xs text-gray-400">(Removed)</span>}
+        </span>
+      );
     }},
     { key: 'batch_number', header: 'Batch #', render: (row) => <span className="text-gray-600">{(row.batch_number as string) || '-'}</span> },
     { key: 'purchase_cost', header: 'Cost', render: (row) => `Rs. ${Number(row.purchase_cost).toFixed(2)}` },
