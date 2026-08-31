@@ -151,10 +151,12 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     return initial;
   });
 
-  // Fetch page permissions for cashier role
+  // Fetch page permissions — always fresh so changes apply instantly
   const { data: permissions = [] } = useQuery({
     queryKey: ['page-permissions', 'CASHIER'],
     queryFn: () => fetchPagePermissions('CASHIER'),
+    staleTime: 0,       // Always consider stale → always refetch
+    refetchInterval: 5000, // Poll every 5s as backup
   });
 
   // Build a set of enabled paths for quick lookup

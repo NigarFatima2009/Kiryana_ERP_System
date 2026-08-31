@@ -28,9 +28,8 @@ const pageGroups = [
     ],
   },
   {
-    label: 'Reports & Other',
+    label: 'Other',
     pages: [
-      { path: '/reports', label: 'Reports', description: 'View sales and inventory reports' },
       { path: '/notifications', label: 'Notifications', description: 'View system notifications' },
     ],
   },
@@ -50,9 +49,10 @@ export function PermissionsPage() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       updatePagePermission(id, enabled),
     onSuccess: async () => {
-      await queryClient.refetchQueries({ queryKey: ['page-permissions'] });
+      // Force refetch ALL permission queries — sidebar must update instantly
+      await queryClient.refetchQueries({ queryKey: ['page-permissions'], type: 'active' });
       setHasChanges(false);
-      toast('success', 'Permissions updated — changes apply immediately for cashiers');
+      toast('success', 'Permissions updated — changes apply immediately');
     },
     onError: (e: Error) => toast('error', e.message),
   });

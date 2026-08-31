@@ -1,5 +1,4 @@
 import { supabase } from '../lib/supabase';
-import { offlineQuery } from '../lib/offlineQuery';
 
 export interface PagePermission {
   id: string;
@@ -9,7 +8,7 @@ export interface PagePermission {
   enabled: boolean;
 }
 
-/** Fetch all page permissions for a role */
+/** Fetch all page permissions for a role — always fresh, not cached */
 export async function fetchPagePermissions(role: string): Promise<PagePermission[]> {
   const { data, error } = await supabase
     .from('page_permissions')
@@ -17,7 +16,7 @@ export async function fetchPagePermissions(role: string): Promise<PagePermission
     .eq('role', role)
     .order('page_path');
   if (error) throw error;
-  return offlineQuery(`page-permissions-${role}`, async () => (data || []) as PagePermission[]);
+  return (data || []) as PagePermission[];
 }
 
 /** Update a single page permission */

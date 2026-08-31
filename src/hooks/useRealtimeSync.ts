@@ -27,6 +27,7 @@ const TABLE_TO_QUERY_KEYS: Record<string, string[]> = {
   supplier_payments: ['dashboard-stats'],
   expenses: ['expenses', 'dashboard-stats', 'daily-expenses'],
   profiles: ['employees'],
+  page_permissions: ['page-permissions'],
 };
 
 /**

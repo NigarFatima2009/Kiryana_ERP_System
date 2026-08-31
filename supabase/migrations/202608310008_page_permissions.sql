@@ -17,7 +17,6 @@ INSERT INTO public.page_permissions (role, page_path, page_label, enabled) VALUE
   ('CASHIER', '/sales-returns', 'Sales Returns', true),
   ('CASHIER', '/customers', 'Customers', true),
   ('CASHIER', '/khata', 'Khata', true),
-  ('CASHIER', '/reports', 'Reports', true),
   ('CASHIER', '/notifications', 'Notifications', true)
 ON CONFLICT (role, page_path) DO NOTHING;
 
@@ -35,3 +34,6 @@ CREATE POLICY "Authenticated users can update page permissions" ON public.page_p
 -- Only authenticated users can insert
 CREATE POLICY "Authenticated users can insert page permissions" ON public.page_permissions
   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+
+-- Enable Realtime so sidebar updates instantly when permissions change
+ALTER PUBLICATION supabase_realtime ADD TABLE public.page_permissions;

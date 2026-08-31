@@ -48,11 +48,14 @@ function ProtectedLayout() {
 function RoleGuard({ children, allowedRoles, pagePath }: { children: React.ReactNode; allowedRoles: AppRole[]; pagePath?: string }) {
   const { profile } = useAuth();
 
-  // Fetch permissions for cashier
+  // Fetch permissions — poll every 2s so disabled pages redirect instantly
   const { data: permissions = [] } = useQuery({
     queryKey: ['page-permissions', 'CASHIER'],
     queryFn: () => fetchPagePermissions('CASHIER'),
     enabled: profile?.role === 'CASHIER' && !!pagePath,
+    staleTime: 0,
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
   });
 
   if (!profile || !allowedRoles.includes(profile.role)) {
@@ -64,16 +67,12 @@ function RoleGuard({ children, allowedRoles, pagePath }: { children: React.React
     );
   }
 
-  // For CASHIER: check if this specific page is enabled
+  // For CASHIER: if page got disabled while open, redirect to POS (cashier's main page)
   if (profile.role === 'CASHIER' && pagePath) {
     const perm = permissions.find((p) => p.page_path === pagePath);
+    // If permission record exists and is disabled, redirect
     if (perm && !perm.enabled) {
-      return (
-        <div className="text-center py-10">
-          <h1 className="text-2xl font-bold text-red-600">Access Denied</h1>
-          <p className="text-gray-500">This page has been disabled by the administrator.</p>
-        </div>
-      );
+      return <Navigate to="/pos" replace />;
     }
   }
 
@@ -99,7 +98,7 @@ export default function App() {
       <Route path="/login" element={!session ? <LoginPage /> : <Navigate to="/" replace />} />
       
       <Route path="/" element={session ? <ProtectedLayout /> : <Navigate to="/login" replace />}>
-        <Route index element={<DashboardPage />} />
+        <Route index element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/"><DashboardPage /></RoleGuard>} />
         <Route path="pos" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/pos"><POSPage /></RoleGuard>} />
         <Route path="sales" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/sales"><SalesHistoryPage /></RoleGuard>} />
         <Route path="sales-returns" element={<RoleGuard allowedRoles={['CASHIER']} pagePath="/sales-returns"><SalesReturnsPage /></RoleGuard>} />
