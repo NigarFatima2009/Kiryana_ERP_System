@@ -26,6 +26,7 @@ import { EmployeesPage } from './pages/employees/EmployeesPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { AuditLogsPage } from './pages/settings/AuditLogsPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
+import { useRealtimeSync } from './hooks/useRealtimeSync';
 import type { AppRole } from './types/database';
 
 function ProtectedLayout() {
@@ -56,6 +57,9 @@ function RoleGuard({ children, allowedRoles }: { children: React.ReactNode; allo
 
 export default function App() {
   const { session, loading } = useAuth();
+
+  // Subscribe to Supabase Realtime changes for live updates
+  useRealtimeSync();
 
   if (loading) {
     return (

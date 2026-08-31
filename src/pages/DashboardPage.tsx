@@ -8,6 +8,7 @@ import {
   getDashboardStats, getSalesChartData, getTopSellingProducts,
   getSalesByPaymentMethod, getSalesByCategory, getStockByCategory,
 } from '../services/dashboard';
+import { useAuth } from '../lib/auth';
 import { formatCurrency } from '../utils/helpers';
 
 const COLORS = ['#475569', '#1d4ed8', '#b45309', '#15803d', '#9333ea', '#be123c'];
@@ -28,6 +29,7 @@ const tooltipStyle = { borderRadius: '6px', border: '1px solid #e5e7eb', fontSiz
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const { profile } = useAuth();
 
   const { data: stats, isLoading } = useQuery({
     queryKey: ['dashboard-stats'],
@@ -49,6 +51,104 @@ export function DashboardPage() {
     );
   }
 
+  // CASHIER: Only show sales-related cards
+  if (profile?.role === 'CASHIER') {
+    return (
+      <div className="space-y-6 max-w-7xl">
+        <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
+
+        {/* Sales only for cashiers */}
+        <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
+          <StatCard title="Today's Sales" value={formatCurrency(stats?.todaySales || 0)} onClick={() => navigate('/sales')} />
+          <StatCard title="Today's Profit" value={formatCurrency(stats?.todayProfit || 0)} />
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
+          <StatCard title="Cash in Hand" value={formatCurrency(stats?.cashInHand || 0)} />
+          <StatCard title="Receivables" value={formatCurrency(stats?.customerReceivables || 0)} onClick={() => navigate('/khata')} />
+        </div>
+
+        {/* Charts - Sales and Payment Methods only */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Sales Trend */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Sales Trend</h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={chartData || []}>
+                <defs>
+                  <pattern id="hatchSales" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                    <line x1="0" y1="0" x2="0" y2="6" stroke="#475569" strokeWidth="1.2" opacity="0.3" />
+                  </pattern>
+                  <pattern id="hatchProfit" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(-45)">
+                    <line x1="0" y1="0" x2="0" y2="6" stroke="#15803d" strokeWidth="1.2" opacity="0.3" />
+                  </pattern>
+                </defs>
+                <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} tickFormatter={(d) => new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric' })} />
+                <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} />
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+                <Area type="monotone" dataKey="sales" stroke="#475569" strokeWidth={1.5} fill="url(#hatchSales)" name="Sales" dot={false} />
+                <Area type="monotone" dataKey="profit" stroke="#15803d" strokeWidth={1.5} fill="url(#hatchProfit)" name="Profit" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Payment Methods */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Payment Methods</h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <defs>
+                  {COLORS.map((color, i) => (
+                    <pattern key={`pie-hatch-${i}`} id={`pieHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30})`}>
+                      <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
+                    </pattern>
+                  ))}
+                </defs>
+                <Pie
+                  data={(paymentMethods || []).map((p) => ({
+                    ...p,
+                    method: p.method.replace('CUSTOMER_CREDIT', 'Khata').replace('BANK_TRANSFER', 'Bank').replace('EASYPAISA', 'Easypaisa').replace('JAZZCASH', 'JazzCash'),
+                  }))}
+                  cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
+                  dataKey="amount" nameKey="method" strokeWidth={2}
+                >
+                  {(paymentMethods || []).map((_, i) => <Cell key={i} fill={`url(#pieHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+                </Pie>
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+                <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Category Sales */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Sales by Category</h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <defs>
+                  {COLORS.map((color, i) => (
+                    <pattern key={`cat-hatch-${i}`} id={`catHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30 + 15})`}>
+                      <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
+                    </pattern>
+                  ))}
+                </defs>
+                <Pie
+                  data={categorySales || []} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
+                  dataKey="value" nameKey="name" strokeWidth={2}
+                >
+                  {(categorySales || []).map((_, i) => <Cell key={i} fill={`url(#catHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+                </Pie>
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+                <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // OWNER/MANAGER/OTHERS: Show all cards
   return (
     <div className="space-y-6 max-w-7xl">
       <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>

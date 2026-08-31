@@ -10,6 +10,7 @@ import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
+import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatDate } from '../../utils/helpers';
 
 type PaymentStatus = 'PAID' | 'PARTIAL' | 'UNPAID';
@@ -113,9 +114,44 @@ export function GoodsReceiptsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      // Call the delete endpoint from the purchasing service
-      // The service should handle all inventory reversal logic
-      await fetch(`/api/goods-receipts/${id}`, { method: 'DELETE' });
+      // Get receipt details
+      const { data: receipt } = await supabase.from('goods_receipts').select('id, supplier_id, purchase_order_id, total').eq('id', id).single();
+      const { data: items } = await supabase.from('goods_receipt_items').select('*').eq('goods_receipt_id', id);
+
+      // Reverse inventory and batch deductions
+      for (const item of items || []) {
+        const qty = Number(item.quantity);
+
+        // Add back to inventory
+        const { data: inv } = await supabase.from('inventory').select('quantity').eq('product_id', item.product_id).maybeSingle();
+        if (inv) {
+          await supabase.from('inventory').update({ quantity: Math.max(0, Number(inv.quantity) - qty) }).eq('product_id', item.product_id);
+        }
+
+        // Reverse batch quantities (most recent batch)
+        const { data: batch } = await supabase.from('inventory_batches').select('id, remaining_quantity').eq('product_id', item.product_id).order('created_at', { ascending: false }).limit(1).single();
+        if (batch) {
+          await supabase.from('inventory_batches').update({ remaining_quantity: Math.max(0, Number(batch.remaining_quantity) - qty) }).eq('id', batch.id);
+        }
+
+        // Delete stock movement
+        await supabase.from('inventory_movements').delete().eq('reference_type', 'GOODS_RECEIPT').eq('reference_id', id).eq('product_id', item.product_id);
+      }
+
+      // Reverse supplier transaction
+      if (receipt?.supplier_id) {
+        await supabase.from('supplier_transactions').delete().eq('reference_type', 'PURCHASE').eq('reference_id', id);
+      }
+
+      // Reset PO status if linked
+      if (receipt?.purchase_order_id) {
+        await supabase.from('purchase_orders').update({ status: 'PENDING' }).eq('id', receipt.purchase_order_id);
+      }
+
+      // Delete receipt items and receipt
+      await supabase.from('goods_receipt_items').delete().eq('goods_receipt_id', id);
+      const { error } = await supabase.from('goods_receipts').delete().eq('id', id);
+      if (error) throw error;
     },
     onSuccess: async () => {
       await Promise.all([
@@ -124,6 +160,7 @@ export function GoodsReceiptsPage() {
         queryClient.refetchQueries({ queryKey: ['inventory-all'] }),
         queryClient.refetchQueries({ queryKey: ['stock-movements'] }),
         queryClient.refetchQueries({ queryKey: ['suppliers'] }),
+        queryClient.refetchQueries({ queryKey: ['purchase-orders'] }),
         queryClient.refetchQueries({ queryKey: ['dashboard-stats'] }),
       ]);
       toast('success', 'Receipt deleted — inventory restored');
