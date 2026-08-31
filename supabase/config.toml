@@ -1,0 +1,8 @@
+project_id = "kiryana-erp"
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
