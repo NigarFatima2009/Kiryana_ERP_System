@@ -19,8 +19,10 @@ export function LoginPage() {
     if (result.error) {
       setError(result.error);
       setLoading(false);
+    } else if (result.mustChangePassword) {
+      navigate('/change-password', { replace: true });
     } else {
-      navigate('/');
+      navigate('/', { replace: true });
     }
   };
 

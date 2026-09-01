@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './lib/auth';
 import { MainLayout } from './components/layout/MainLayout';
 import { LoginPage } from './pages/auth/LoginPage';
+import { ChangePasswordPage } from './pages/auth/ChangePasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProductsPage } from './pages/products/ProductsPage';
 import { CategoriesPage } from './pages/products/CategoriesPage';
@@ -96,6 +97,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={!session ? <LoginPage /> : <Navigate to="/" replace />} />
+      <Route path="/change-password" element={session ? <ChangePasswordPage /> : <Navigate to="/login" replace />} />
       
       <Route path="/" element={session ? <ProtectedLayout /> : <Navigate to="/login" replace />}>
         <Route index element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/"><DashboardPage /></RoleGuard>} />

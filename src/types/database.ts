@@ -6,6 +6,7 @@ export interface Profile {
   email: string | null;
   role: AppRole;
   active: boolean;
+  must_change_password: boolean;
   created_at: string;
   updated_at: string;
 }
