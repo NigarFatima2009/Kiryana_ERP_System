@@ -113,12 +113,24 @@ export async function fetchJournalEntries(params?: { page?: number; pageSize?: n
 }
 
 export async function fetchJournalEntryLines(entryId: string) {
-  const { data, error } = await supabase
+  const { data: lines, error } = await supabase
     .from('journal_entry_lines')
-    .select('*, accounts!journal_entry_lines_account_id_fkey(code, name, account_type)')
+    .select('*')
     .eq('journal_entry_id', entryId);
   if (error) throw error;
-  return data as (JournalEntryLine & { accounts: { code: string; name: string; account_type: string } })[];
+  if (!lines || lines.length === 0) return [];
+
+  const accountIds = [...new Set(lines.map(l => l.account_id))];
+  const { data: accounts } = await supabase
+    .from('accounts')
+    .select('id, code, name, account_type')
+    .in('id', accountIds);
+  const accountMap = new Map((accounts || []).map(a => [a.id, a]));
+
+  return lines.map(line => ({
+    ...line,
+    accounts: accountMap.get(line.account_id) || { code: '', name: 'Unknown', account_type: '' },
+  })) as (JournalEntryLine & { accounts: { code: string; name: string; account_type: string } })[];
 }
 
 export async function getAccountBalances() {
@@ -153,12 +165,28 @@ export async function getAccountBalances() {
 export async function fetchGeneralLedger(accountId?: string) {
   let query = supabase
     .from('journal_entry_lines')
-    .select('*, journal_entries!journal_entry_lines_journal_entry_id_fkey(reference_type, description, created_at)')
-    .order('created_at', { ascending: false });
+    .select('*')
+    .limit(500);
 
   if (accountId) query = query.eq('account_id', accountId);
 
   const { data: lines, error } = await query;
   if (error) throw error;
-  return (lines || []) as (JournalEntryLine & { journal_entries: { reference_type: string; description: string; created_at: string } })[];
+  if (!lines || lines.length === 0) return [];
+
+  const entryIds = [...new Set(lines.map(l => l.journal_entry_id))];
+  const { data: entries } = await supabase
+    .from('journal_entries')
+    .select('id, reference_type, description, created_at')
+    .in('id', entryIds);
+  const entryMap = new Map((entries || []).map(e => [e.id, e]));
+
+  return lines.map(line => ({
+    ...line,
+    journal_entries: entryMap.get(line.journal_entry_id) || null,
+  })).sort((a, b) => {
+    const dateA = a.journal_entries?.created_at || '';
+    const dateB = b.journal_entries?.created_at || '';
+    return dateB.localeCompare(dateA);
+  }) as (JournalEntryLine & { journal_entries: { reference_type: string; description: string; created_at: string } })[];
 }

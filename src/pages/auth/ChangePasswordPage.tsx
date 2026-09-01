@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Store, Eye, EyeOff, Check, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import { changeOwnPassword } from '../../services/employees';
@@ -14,9 +14,23 @@ export function ChangePasswordPage() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // While profile is loading, show nothing
+  if (!profile) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+      </div>
+    );
+  }
+
   // If user doesn't need password change, redirect to dashboard
-  if (!profile?.must_change_password) {
-    navigate('/', { replace: true });
+  useEffect(() => {
+    if (profile && !profile.must_change_password) {
+      navigate('/', { replace: true });
+    }
+  }, [profile, navigate]);
+
+  if (profile && !profile.must_change_password) {
     return null;
   }
 

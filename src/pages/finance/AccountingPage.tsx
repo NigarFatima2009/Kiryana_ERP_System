@@ -142,10 +142,32 @@ function GeneralLedger() {
     queryKey: ['general-ledger', selectedAccount],
     queryFn: async () => {
       const { supabase } = await import('../../lib/supabase');
-      let query = supabase.from('journal_entry_lines').select('*, journal_entries!journal_entry_lines_journal_entry_id_fkey(reference_type, description, created_at)').order('created_at', { ascending: false }).limit(100);
+      let query = supabase.from('journal_entry_lines').select('*').limit(200);
       if (selectedAccount) query = query.eq('account_id', selectedAccount);
-      const { data } = await query;
-      return data || [];
+      const { data: lines } = await query;
+      if (!lines || lines.length === 0) return [];
+
+      // Fetch related data separately
+      const entryIds = [...new Set(lines.map((l) => l.journal_entry_id))];
+      const accountIds = [...new Set(lines.map((l) => l.account_id))];
+
+      const [entriesRes, accountsRes] = await Promise.all([
+        supabase.from('journal_entries').select('id, reference_type, description, created_at').in('id', entryIds),
+        supabase.from('accounts').select('id, code, name').in('id', accountIds),
+      ]);
+
+      const entryMap = new Map((entriesRes.data || []).map((e) => [e.id, e]));
+      const accountMap = new Map((accountsRes.data || []).map((a) => [a.id, a]));
+
+      return lines.map((line) => ({
+        ...line,
+        journal_entries: entryMap.get(line.journal_entry_id) || null,
+        accounts: accountMap.get(line.account_id) || null,
+      })).sort((a, b) => {
+        const dateA = a.journal_entries?.created_at || '';
+        const dateB = b.journal_entries?.created_at || '';
+        return dateB.localeCompare(dateA);
+      });
     },
   });
 

@@ -34,42 +34,66 @@ const TABLE_TO_QUERY_KEYS: Record<string, string[]> = {
  * Subscribe to Supabase Realtime changes on all key tables.
  * When any row is inserted/updated/deleted, the corresponding
  * React Query caches are invalidated so the UI updates instantly.
+ * 
+ * Gracefully handles connection failures - app continues to work
+ * even if realtime connection isn't available.
  */
-export function useRealtimeSync() {
+export function useRealtimeSync(enabled: boolean) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    if (!enabled) return;
+
     const tables = Object.keys(TABLE_TO_QUERY_KEYS);
     const channels: ReturnType<typeof supabase.channel>[] = [];
 
-    for (const table of tables) {
-      const channel = supabase
-        .channel(`realtime:${table}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*', // INSERT, UPDATE, DELETE
-            schema: 'public',
-            table,
-          },
-          (payload) => {
-            const keys = TABLE_TO_QUERY_KEYS[table] || [];
-            // Invalidate all related queries so they refetch
-            for (const key of keys) {
-              queryClient.invalidateQueries({ queryKey: [key] });
-            }
-            console.log(`[Realtime] ${payload.eventType} on ${table}`);
-          }
-        )
-        .subscribe();
+    async function setupRealtimeSubscriptions() {
+      for (const table of tables) {
+        try {
+          const channel = supabase
+            .channel(`realtime:${table}`, {
+              config: {
+                broadcast: { ack: true },
+              },
+            })
+            .on(
+              'postgres_changes',
+              {
+                event: '*', // INSERT, UPDATE, DELETE
+                schema: 'public',
+                table,
+              },
+              (payload) => {
+                const keys = TABLE_TO_QUERY_KEYS[table] || [];
+                // Invalidate all related queries so they refetch
+                for (const key of keys) {
+                  queryClient.invalidateQueries({ queryKey: [key] });
+                }
+                console.log(`[Realtime] ${payload.eventType} on ${table}`);
+              }
+            )
+            .subscribe((status) => {
+              if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                console.warn(`[Realtime] Subscription error on ${table} - will continue without realtime updates`);
+              } else if (status === 'SUBSCRIBED') {
+                console.log(`[Realtime] Subscribed to ${table}`);
+              }
+            });
 
-      channels.push(channel);
+          channels.push(channel);
+        } catch (error) {
+          console.warn(`[Realtime] Failed to subscribe to ${table}:`, error);
+          // Continue - app works without this table's realtime updates
+        }
+      }
     }
+
+    setupRealtimeSubscriptions();
 
     return () => {
       for (const channel of channels) {
         supabase.removeChannel(channel);
       }
     };
-  }, [queryClient]);
+  }, [enabled, queryClient]);
 }

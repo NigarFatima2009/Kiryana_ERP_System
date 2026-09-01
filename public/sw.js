@@ -1,6 +1,7 @@
-const CACHE_NAME = 'erp-v2';
-const STATIC_CACHE = 'erp-static-v2';
-const DATA_CACHE = 'erp-data-v1';
+const CACHE_NAME = 'erp-v4';
+const STATIC_CACHE = 'erp-static-v4';
+const DATA_CACHE = 'erp-data-v3';
+const IS_LOCAL_DEVELOPMENT = ['localhost', '127.0.0.1', '::1'].includes(self.location.hostname);
 
 // App shell files to precache on install
 const SHELL_FILES = [
@@ -35,6 +36,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
+  // Never cache Vite development modules or its HMR client. Caching them
+  // serves stale source files and breaks the development WebSocket.
+  if (IS_LOCAL_DEVELOPMENT) return;
+
   // Only handle GET requests
   if (request.method !== 'GET') return;
 
@@ -52,11 +57,15 @@ self.addEventListener('fetch', (event) => {
       fetch(request)
         .then((response) => {
           const clone = response.clone();
-          caches.open(STATIC_CACHE).then((cache) => cache.put(request, clone));
+          void caches.open(STATIC_CACHE)
+            .then((cache) => cache.put(request, clone))
+            .catch(() => undefined);
           return response;
         })
         .catch(() =>
-          caches.match(request).then((cached) => cached || caches.match('/offline.html'))
+          caches.match(request).then((cached) =>
+            cached || caches.match('/offline.html') || new Response('Offline', { status: 503 })
+          )
         )
     );
     return;
@@ -78,13 +87,17 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
-        return fetch(request).then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(STATIC_CACHE).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        });
+        return fetch(request)
+          .then((response) => {
+            if (response.ok) {
+              const clone = response.clone();
+              void caches.open(STATIC_CACHE)
+                .then((cache) => cache.put(request, clone))
+                .catch(() => undefined);
+            }
+            return response;
+          })
+          .catch(() => new Response('Asset unavailable offline', { status: 503 }));
       })
     );
     return;
@@ -96,11 +109,15 @@ self.addEventListener('fetch', (event) => {
       .then((response) => {
         if (response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          void caches.open(CACHE_NAME)
+            .then((cache) => cache.put(request, clone))
+            .catch(() => undefined);
         }
         return response;
       })
-      .catch(() => caches.match(request))
+      .catch(() => caches.match(request).then(
+        (cached) => cached || new Response('Request unavailable offline', { status: 503 })
+      ))
   );
 });
 

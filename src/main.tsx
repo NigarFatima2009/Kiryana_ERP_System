@@ -19,14 +19,22 @@ const queryClient = new QueryClient({
   },
 });
 
-// Register service worker for offline SPA access
+// Service workers cache modules aggressively. Keep them out of Vite
+// development so hot reloads never serve stale application code; production
+// builds still register the worker for offline app-shell access.
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then(
-      (reg) => console.log('[SW] Registered:', reg.scope),
-      (err) => console.warn('[SW] Registration failed:', err)
+  if (import.meta.env.PROD) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').then(
+        (reg) => console.log('[SW] Registered:', reg.scope),
+        (err) => console.warn('[SW] Registration failed:', err)
+      );
+    });
+  } else {
+    void navigator.serviceWorker.getRegistrations().then(
+      (registrations) => Promise.all(registrations.map((registration) => registration.unregister()))
     );
-  });
+  }
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

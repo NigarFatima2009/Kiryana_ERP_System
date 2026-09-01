@@ -9,6 +9,8 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
 import { formatCurrency, formatDateTime } from '../../utils/helpers';
+import { getAllCachedCustomers } from '../../lib/offline/cache';
+import { useNetworkStatus } from '../../hooks/useOfflineStatus';
 import type { Customer, CustomerTransaction } from '../../types/database';
 import { useNavigate } from 'react-router-dom';
 
@@ -22,12 +24,60 @@ export function CustomersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const networkStatus = useNetworkStatus();
+  const isOnline = networkStatus.status === 'ONLINE';
   const canDelete = profile?.role === 'OWNER';
 
-  const { data, isLoading } = useQuery({
+  // Online: fetch from server
+  const { data: onlineData, isLoading: onlineLoading } = useQuery({
     queryKey: ['customers', search],
     queryFn: () => fetchCustomers({ search }),
+    enabled: isOnline, // Only fetch online
   });
+
+  // Offline: fetch from IndexedDB cache
+  const [offlineData, setOfflineData] = useState<Customer[] | null>(null);
+  const [offlineLoading, setOfflineLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isOnline) {
+      loadOfflineCustomers();
+    }
+  }, [isOnline]);
+
+  const loadOfflineCustomers = async () => {
+    setOfflineLoading(true);
+    try {
+      const cached = await getAllCachedCustomers();
+      // Map offline customers to match Customer interface
+      const mapped = (cached as any[]).map(c => ({
+        ...c,
+        notes: '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as Customer));
+      setOfflineData(mapped);
+    } catch (error) {
+      console.error('[Customers] Failed to load offline cache:', error);
+      setOfflineData([]);
+    } finally {
+      setOfflineLoading(false);
+    }
+  };
+
+  // Re-filter offline data when search changes
+  useEffect(() => {
+    if (!isOnline && offlineData) {
+      const filtered = offlineData.filter(c =>
+        c.name.toLowerCase().includes(search.toLowerCase()) ||
+        (c.phone && c.phone.includes(search))
+      );
+      setOfflineData(filtered);
+    }
+  }, [search, isOnline]);
+
+  const data = isOnline ? onlineData : { data: offlineData || [] };
+  const isLoading = isOnline ? onlineLoading : offlineLoading;
 
   const columns: Column<Record<string, unknown>>[] = [
     { key: 'name', header: 'Customer', render: (row) => (

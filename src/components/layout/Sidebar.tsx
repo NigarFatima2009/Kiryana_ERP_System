@@ -27,13 +27,12 @@ interface NavGroup {
 const navigation: NavGroup[] = [
   // Dashboard — ALL
   { label: 'Dashboard', icon: <LayoutDashboard size={20} />, items: [{ label: 'Dashboard', path: '/', icon: <LayoutDashboard size={18} /> }], roles: ['OWNER', 'CASHIER'] },
-
-  // POS — CASHIER only (their main job)
   {
     label: 'POS',
     icon: <ShoppingCart size={20} />,
     items: [
       { label: 'Point of Sale', path: '/pos', icon: <Store size={18} /> },
+      { label: 'Shift Management', path: '/shift', icon: <ScrollText size={18} /> },
       { label: 'Sales History', path: '/sales', icon: <FileText size={18} /> },
       { label: 'Sales Returns', path: '/sales-returns', icon: <PackageX size={18} /> },
     ],
@@ -60,6 +59,7 @@ const navigation: NavGroup[] = [
       { label: 'Stock', path: '/stock', icon: <Boxes size={18} /> },
       { label: 'Stock Movements', path: '/stock-movements', icon: <ArrowLeftRight size={18} /> },
       { label: 'Batches & Expiry', path: '/batches', icon: <AlertTriangle size={18} /> },
+      { label: 'Inventory Valuation', path: '/valuation', icon: <BarChart3 size={18} /> },
     ],
     roles: ['OWNER'],
   },
@@ -69,6 +69,7 @@ const navigation: NavGroup[] = [
     label: 'Purchasing',
     icon: <Truck size={20} />,
     items: [
+      { label: 'Reorder Recommendations', path: '/reorder-recommendations', icon: <AlertTriangle size={18} /> },
       { label: 'Suppliers', path: '/suppliers', icon: <Users size={18} /> },
       { label: 'Purchase Orders', path: '/purchase-orders', icon: <ClipboardList size={18} /> },
       { label: 'Goods Receipts', path: '/goods-receipts', icon: <Receipt size={18} /> },
@@ -151,17 +152,49 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     return initial;
   });
 
-  // Fetch page permissions — always fresh so changes apply instantly
+  // Fetch page permissions — cached in localStorage for offline use
   const { data: permissions = [] } = useQuery({
-    queryKey: ['page-permissions', 'CASHIER'],
-    queryFn: () => fetchPagePermissions('CASHIER'),
-    staleTime: 0,       // Always consider stale → always refetch
-    refetchInterval: 5000, // Poll every 5s as backup
+    queryKey: ['page-permissions', profile?.id || 'CASHIER'],
+    queryFn: async () => {
+      if (!profile) return [];
+      const cacheKey = `page-permissions-${profile.id || profile.role}`;
+      try {
+        let perms;
+        if (profile.role === 'CASHIER' && profile.id) {
+          const { fetchPagePermissionsForUser } = await import('../../services/permissions');
+          perms = await fetchPagePermissionsForUser(profile.id, 'CASHIER');
+        } else {
+          const { fetchPagePermissions } = await import('../../services/permissions');
+          perms = await fetchPagePermissions(profile.role);
+        }
+        // Cache to localStorage for offline fallback
+        try { localStorage.setItem(cacheKey, JSON.stringify(perms)); } catch {}
+        console.log('✓ Permissions fetched:', perms.length, 'pages');
+        return perms;
+      } catch (error) {
+        console.warn('Permission fetch failed (using cache):', (error instanceof Error ? error.message : String(error)).substring(0, 80));
+        // Fall back to cached permissions from localStorage
+        try {
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            console.log('✓ Using cached permissions:', parsed.length, 'pages');
+            return parsed;
+          }
+        } catch {}
+        return [];
+      }
+    },
+    staleTime: 5 * 60 * 1000,     // Cache for 5 minutes
+    refetchInterval: navigator.onLine ? 30_000 : false, // Poll every 30s (online only)
+    enabled: !!profile,
+    retry: navigator.onLine ? 2 : 0, // Don't retry when offline
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 
   // Build a set of enabled paths for quick lookup
   const enabledPaths = new Set(
-    permissions.filter((p) => p.enabled).map((p) => p.page_path)
+    permissions.filter((p: any) => p.enabled).map((p: any) => p.page_path)
   );
 
   const toggleGroup = (label: string) => {
@@ -175,6 +208,11 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
 
     // For CASHIER: check page permissions
     if (profile.role === 'CASHIER') {
+      // SAFETY FALLBACK: If permissions array is empty (loading or error),
+      // still show groups — better to show everything than hide everything
+      if (permissions.length === 0) {
+        return true;
+      }
       // Show group if at least one of its pages is enabled
       const hasEnabledPage = group.items.some((item) => enabledPaths.has(item.path));
       return hasEnabledPage;
@@ -186,6 +224,13 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   // Filter items within a group based on permissions
   const getVisibleItems = (group: NavGroup) => {
     if (profile?.role !== 'CASHIER') return group.items;
+    
+    // SAFETY FALLBACK: If permissions array is empty (loading or error),
+    // show all items — better than hiding everything
+    if (permissions.length === 0) {
+      return group.items;
+    }
+    
     return group.items.filter((item) => enabledPaths.has(item.path));
   };
 

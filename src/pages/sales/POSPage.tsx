@@ -191,7 +191,7 @@ export function POSPage() {
                   disabled={p.stock <= 0}
                   className="card flex flex-col items-center p-3 text-center transition-transform hover:scale-[1.02] hover:shadow-md disabled:opacity-40 cursor-pointer border border-gray-200"
                 >
-                  <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+                  <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
                     <ShoppingCart size={20} />
                   </div>
                   <p className="text-sm font-medium text-gray-900 line-clamp-2">{p.name}</p>

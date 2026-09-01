@@ -7,7 +7,9 @@ import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/Toast';
 import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatDateTime } from '../../utils/helpers';
-import type { CustomerTransaction } from '../../types/database';
+import { getAllCachedCustomers } from '../../lib/offline/cache';
+import { useNetworkStatus } from '../../hooks/useOfflineStatus';
+import type { CustomerTransaction, Customer } from '../../types/database';
 
 export function KhataPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -15,11 +17,43 @@ export function KhataPage() {
   const [showPayment, setShowPayment] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const networkStatus = useNetworkStatus();
+  const isOnline = networkStatus.status === 'ONLINE';
 
-  const { data: customers = [] } = useQuery({
+  // Online: fetch from server
+  const { data: onlineCustomers = [] } = useQuery({
     queryKey: ['customers'],
     queryFn: () => fetchCustomers({}).then((r) => r.data),
+    enabled: isOnline,
   });
+
+  // Offline: fetch from IndexedDB cache
+  const [offlineCustomers, setOfflineCustomers] = useState<Customer[]>([]);
+
+  useEffect(() => {
+    if (!isOnline) {
+      loadOfflineCustomers();
+    }
+  }, [isOnline]);
+
+  const loadOfflineCustomers = async () => {
+    try {
+      const cached = await getAllCachedCustomers();
+      // Map offline customers to match Customer interface
+      const mapped = (cached as any[]).map(c => ({
+        ...c,
+        notes: '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as Customer));
+      setOfflineCustomers(mapped);
+    } catch (error) {
+      console.error('[Khata] Failed to load offline customers:', error);
+      setOfflineCustomers([]);
+    }
+  };
+
+  const customers = isOnline ? onlineCustomers : offlineCustomers;
 
   const { data: transactions, isLoading } = useQuery({
     queryKey: ['customer-transactions', selectedCustomer],

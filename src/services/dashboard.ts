@@ -1,5 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { offlineQuery } from '../lib/offlineQuery';
+import { getOfflineDB } from '../lib/offline/db';
 import type { DashboardStats } from '../types/database';
 
 export async function getDashboardStats(): Promise<DashboardStats> {
@@ -22,6 +23,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       totalSales += Number(sale.total);
       profit += Number(sale.total) - Number(sale.cogs);
     });
+
+    // Include offline pending sales in today's total
+    try {
+      const db = getOfflineDB();
+      const offlineSales = await db.offlineSales.toArray();
+      const todayOfflineSales = offlineSales.filter((sale: any) => {
+        const saleDate = new Date(sale.sale_date).toISOString().split('T')[0];
+        return saleDate === today && (sale.status === 'pending_sync' || sale.status === 'syncing');
+      });
+      todayOfflineSales.forEach((sale: any) => {
+        totalSales += Number(sale.total || 0);
+        const cogs = Number(sale.cogs || 0);
+        profit += Number(sale.total || 0) - cogs;
+      });
+    } catch (err) {
+      // Offline DB not available, continue with online data only
+    }
 
     // Today's credit sales
     const { data: creditData } = await supabase
@@ -292,4 +310,297 @@ export async function getDailyExpenses(days: number = 14) {
   return Object.values(grouped).sort((a: any, b: any) =>
     new Date(a.date).getTime() - new Date(b.date).getTime()
   );
+}
+
+// ==================== TREND COMPARISONS ====================
+
+export interface TrendData {
+  period: string;
+  sales: number;
+  profit: number;
+  transactions: number;
+  avgTransactionValue: number;
+}
+
+export interface TrendComparison {
+  current: TrendData;
+  previous: TrendData;
+  salesChange: number;
+  salesChangePercent: number;
+  profitChange: number;
+  profitChangePercent: number;
+  transactionChange: number;
+  transactionChangePercent: number;
+}
+
+/**
+ * Get sales trend for a specific period (day, week, month)
+ */
+export async function getSalesTrendData(period: 'day' | 'week' | 'month'): Promise<TrendData> {
+  const now = new Date();
+  let startDate: Date;
+  let endDate: Date;
+
+  if (period === 'day') {
+    startDate = new Date(now);
+    startDate.setHours(0, 0, 0, 0);
+    endDate = new Date(now);
+    endDate.setHours(23, 59, 59, 999);
+  } else if (period === 'week') {
+    startDate = new Date(now);
+    startDate.setDate(now.getDate() - now.getDay());
+    startDate.setHours(0, 0, 0, 0);
+    endDate = new Date(now);
+    endDate.setHours(23, 59, 59, 999);
+  } else {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    endDate = new Date(now);
+  }
+
+  const { data: sales, error } = await supabase
+    .from('sales')
+    .select('total, cogs')
+    .eq('status', 'COMPLETED')
+    .gte('sale_date', startDate.toISOString())
+    .lte('sale_date', endDate.toISOString());
+
+  if (error) {
+    return {
+      period,
+      sales: 0,
+      profit: 0,
+      transactions: 0,
+      avgTransactionValue: 0,
+    };
+  }
+
+  let totalSales = 0;
+  let totalProfit = 0;
+  const count = sales?.length || 0;
+
+  (sales || []).forEach((sale: any) => {
+    totalSales += Number(sale.total);
+    totalProfit += Number(sale.total) - Number(sale.cogs);
+  });
+
+  return {
+    period,
+    sales: totalSales,
+    profit: totalProfit,
+    transactions: count,
+    avgTransactionValue: count > 0 ? totalSales / count : 0,
+  };
+}
+
+/**
+ * Compare current period with previous period
+ */
+export async function compareSalesTrend(period: 'day' | 'week' | 'month'): Promise<TrendComparison> {
+  const current = await getSalesTrendData(period);
+
+  const now = new Date();
+  let previousStart: Date;
+  let previousEnd: Date;
+
+  if (period === 'day') {
+    previousStart = new Date(now);
+    previousStart.setDate(now.getDate() - 1);
+    previousStart.setHours(0, 0, 0, 0);
+    previousEnd = new Date(now);
+    previousEnd.setDate(now.getDate() - 1);
+    previousEnd.setHours(23, 59, 59, 999);
+  } else if (period === 'week') {
+    previousStart = new Date(now);
+    previousStart.setDate(now.getDate() - 7 - now.getDay());
+    previousStart.setHours(0, 0, 0, 0);
+    previousEnd = new Date(now);
+    previousEnd.setDate(now.getDate() - 7);
+    previousEnd.setHours(23, 59, 59, 999);
+  } else {
+    previousStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    previousEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+  }
+
+  const { data: previousSales } = await supabase
+    .from('sales')
+    .select('total, cogs')
+    .eq('status', 'COMPLETED')
+    .gte('sale_date', previousStart.toISOString())
+    .lte('sale_date', previousEnd.toISOString());
+
+  let prevTotalSales = 0;
+  let prevTotalProfit = 0;
+  const prevCount = previousSales?.length || 0;
+
+  (previousSales || []).forEach((sale: any) => {
+    prevTotalSales += Number(sale.total);
+    prevTotalProfit += Number(sale.total) - Number(sale.cogs);
+  });
+
+  const previous: TrendData = {
+    period: `Previous ${period}`,
+    sales: prevTotalSales,
+    profit: prevTotalProfit,
+    transactions: prevCount,
+    avgTransactionValue: prevCount > 0 ? prevTotalSales / prevCount : 0,
+  };
+
+  const salesChange = current.sales - previous.sales;
+  const profitChange = current.profit - previous.profit;
+  const transactionChange = current.transactions - previous.transactions;
+
+  return {
+    current,
+    previous,
+    salesChange,
+    salesChangePercent: previous.sales > 0 ? (salesChange / previous.sales) * 100 : 0,
+    profitChange,
+    profitChangePercent: previous.profit > 0 ? (profitChange / previous.profit) * 100 : 0,
+    transactionChange,
+    transactionChangePercent: previous.transactions > 0 ? (transactionChange / previous.transactions) * 100 : 0,
+  };
+}
+
+/**
+ * Get performance metrics for last N days
+ */
+export async function getPerformanceMetrics(days: number = 30): Promise<{
+  date: string;
+  sales: number;
+  profit: number;
+  margin: number;
+  transactions: number;
+}[]> {
+  const endDate = new Date();
+  const startDate = new Date(endDate.getTime() - days * 24 * 60 * 60 * 1000);
+
+  const { data } = await supabase
+    .from('sales')
+    .select('sale_date, total, cogs')
+    .eq('status', 'COMPLETED')
+    .gte('sale_date', startDate.toISOString())
+    .lte('sale_date', endDate.toISOString())
+    .order('sale_date');
+
+  const grouped: Record<string, any> = {};
+
+  (data || []).forEach((sale: any) => {
+    const date = sale.sale_date.split('T')[0];
+    if (!grouped[date]) {
+      grouped[date] = { date, sales: 0, profit: 0, cogs: 0, transactions: 0 };
+    }
+    grouped[date].sales += Number(sale.total);
+    grouped[date].cogs += Number(sale.cogs);
+    grouped[date].profit += Number(sale.total) - Number(sale.cogs);
+    grouped[date].transactions += 1;
+  });
+
+  return Object.values(grouped)
+    .map((item: any) => ({
+      date: item.date,
+      sales: item.sales,
+      profit: item.profit,
+      margin: item.sales > 0 ? (item.profit / item.sales) * 100 : 0,
+      transactions: item.transactions,
+    }))
+    .sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+/**
+ * Get customer metrics (total customers, active customers, sales per customer)
+ */
+export async function getCustomerMetrics(): Promise<{
+  totalCustomers: number;
+  activeCustomers: number;
+  totalCredit: number;
+  avgCreditPerCustomer: number;
+  totalReceivables: number;
+}> {
+  const { count: totalCustomers } = await supabase
+    .from('customers')
+    .select('id', { count: 'exact' });
+
+  const { data: transactions } = await supabase
+    .from('customer_transactions')
+    .select('customer_id, amount, transaction_type, created_at')
+    .order('created_at', { ascending: false });
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const activeCustomerSet = new Set<string>();
+  let totalCredit = 0;
+  let totalReceivables = 0;
+
+  const customerBalances: Record<string, number> = {};
+
+  (transactions || []).forEach((t: any) => {
+    if (new Date(t.created_at) > thirtyDaysAgo) {
+      activeCustomerSet.add(t.customer_id);
+    }
+
+    if (!customerBalances[t.customer_id]) customerBalances[t.customer_id] = 0;
+    if (t.transaction_type === 'CREDIT_SALE') {
+      customerBalances[t.customer_id] += Number(t.amount);
+      totalCredit += Number(t.amount);
+    }
+    if (t.transaction_type === 'PAYMENT' || t.transaction_type === 'RETURN') {
+      customerBalances[t.customer_id] -= Number(t.amount);
+    }
+  });
+
+  totalReceivables = Object.values(customerBalances).reduce((sum, balance) => sum + Math.max(0, balance), 0);
+
+  return {
+    totalCustomers: totalCustomers || 0,
+    activeCustomers: activeCustomerSet.size,
+    totalCredit,
+    avgCreditPerCustomer: (totalCustomers || 0) > 0 ? totalCredit / (totalCustomers || 0) : 0,
+    totalReceivables,
+  };
+}
+
+/**
+ * Get inventory turnover metrics
+ */
+export async function getInventoryTurnoverMetrics(): Promise<{
+  totalInventoryValue: number;
+  costOfGoodsSold: number;
+  turnoverRatio: number;
+  daysInventoryOutstanding: number;
+}> {
+  // Get current inventory value
+  const { data: inventoryData } = await supabase
+    .from('inventory')
+    .select('quantity, average_cost');
+
+  let totalInventoryValue = 0;
+  (inventoryData || []).forEach((inv: any) => {
+    totalInventoryValue += Number(inv.quantity) * Number(inv.average_cost);
+  });
+
+  // Get COGS for last 365 days
+  const lastYear = new Date();
+  lastYear.setDate(lastYear.getDate() - 365);
+
+  const { data: salesData } = await supabase
+    .from('sales')
+    .select('cogs')
+    .eq('status', 'COMPLETED')
+    .gte('sale_date', lastYear.toISOString());
+
+  let costOfGoodsSold = 0;
+  (salesData || []).forEach((sale: any) => {
+    costOfGoodsSold += Number(sale.cogs);
+  });
+
+  const turnoverRatio = totalInventoryValue > 0 ? costOfGoodsSold / totalInventoryValue : 0;
+  const daysInventoryOutstanding = turnoverRatio > 0 ? 365 / turnoverRatio : 0;
+
+  return {
+    totalInventoryValue,
+    costOfGoodsSold,
+    turnoverRatio,
+    daysInventoryOutstanding,
+  };
 }

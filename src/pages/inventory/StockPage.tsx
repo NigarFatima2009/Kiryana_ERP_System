@@ -1,31 +1,33 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, AlertTriangle } from 'lucide-react';
+import { Search, AlertTriangle, WifiOff } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { formatCurrency } from '../../utils/helpers';
+import { getAllCachedInventory, getAllCachedProducts, getAllCachedCategories } from '../../lib/offline/cache';
+import { useNetworkStatus } from '../../hooks/useOfflineStatus';
 
 export function StockPage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<'all' | 'low'>('all');
   const PAGE_SIZE = 20;
+  const networkStatus = useNetworkStatus();
+  const isOnline = networkStatus.status === 'ONLINE';
 
-  // Fetch ALL inventory + products, then filter client-side
-  const { data: allData, isLoading } = useQuery({
+  // Online: fetch from Supabase
+  const { data: onlineData, isLoading: onlineLoading } = useQuery({
     queryKey: ['inventory-all'],
     refetchInterval: 10000,
+    enabled: isOnline,
     queryFn: async () => {
-      // Get all inventory
       const { data: inv } = await supabase.from('inventory').select('*');
       if (!inv || inv.length === 0) return [];
 
-      // Get all products
       const productIds = inv.map((i) => i.product_id);
       const { data: products } = await supabase.from('products').select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id, active').in('id', productIds);
 
-      // Get categories
       const catIds = (products || []).map((p) => p.category_id).filter(Boolean);
       const { data: cats } = await supabase.from('categories').select('id, name').in('id', catIds);
 
@@ -42,6 +44,56 @@ export function StockPage() {
       });
     },
   });
+
+  // Offline: load from IndexedDB with periodic refresh
+  const [offlineData, setOfflineData] = useState<any[]>([]);
+  const [offlineLoading, setOfflineLoading] = useState(false);
+
+  const loadOfflineData = useCallback(async () => {
+    try {
+      const [inventory, products, categories] = await Promise.all([
+        getAllCachedInventory(),
+        getAllCachedProducts(),
+        getAllCachedCategories(),
+      ]);
+
+      const pMap = new Map(products.map((p) => [p.id, p]));
+      const cMap = new Map(categories.map((c) => [c.id, c.name]));
+
+      setOfflineData(
+        inventory.map((inv) => {
+          const p = pMap.get(inv.product_id);
+          return {
+            ...inv,
+            products: p
+              ? { ...p, categories: p.category_id ? { name: cMap.get(p.category_id) || '' } : null }
+              : null,
+            product_active: p?.active ?? true,
+          };
+        })
+      );
+    } catch (err) {
+      console.error('[StockPage] Failed to load offline data:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOnline) return;
+
+    // Initial load
+    setOfflineLoading(true);
+    loadOfflineData().finally(() => setOfflineLoading(false));
+
+    // Poll every 3 seconds to catch offline sales
+    const interval = setInterval(() => {
+      loadOfflineData();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [isOnline, loadOfflineData]);
+
+  const allData = isOnline ? onlineData : offlineData;
+  const isLoading = isOnline ? onlineLoading : offlineLoading;
 
   // Apply filters
   let filtered = allData || [];
@@ -105,6 +157,13 @@ export function StockPage() {
 
   return (
     <div className="space-y-4">
+      {!isOnline && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+          <WifiOff className="h-4 w-4 text-amber-600" />
+          <span className="text-sm font-medium text-amber-700">Offline Mode — Showing cached inventory (auto-refreshes)</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Stock</h1>

@@ -17,7 +17,7 @@ CREATE OR REPLACE FUNCTION public.create_cashier_account(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, auth, extensions
 AS $$
 DECLARE
   v_caller_role public.app_role;
@@ -75,7 +75,7 @@ BEGIN
     confirmation_token,
     recovery_token
   ) VALUES (
-    '00000000-0000-0000-0000-000000000000',
+    (SELECT id FROM auth.instances LIMIT 1),
     v_user_id,
     'authenticated',
     'authenticated',
@@ -147,7 +147,7 @@ CREATE OR REPLACE FUNCTION public.change_own_password(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, auth, extensions
 AS $$
 DECLARE
   v_user_id uuid;
@@ -192,7 +192,7 @@ CREATE OR REPLACE FUNCTION public.set_cashier_password(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, auth, extensions
 AS $$
 DECLARE
   v_caller_role public.app_role;
@@ -232,7 +232,7 @@ CREATE OR REPLACE FUNCTION public.delete_cashier_account(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, auth, extensions
 AS $$
 DECLARE
   v_caller_role public.app_role;

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Eye, Trash2 } from 'lucide-react';
-import { fetchGoodsReceipts, receiveGoods, fetchGoodsReceipt, fetchPurchaseOrders } from '../../services/purchasing';
+import { fetchGoodsReceipts, receiveGoods, fetchGoodsReceipt, fetchPurchaseOrders, fetchPurchaseOrder } from '../../services/purchasing';
 import { fetchSuppliers } from '../../services/suppliers';
 import { fetchProducts } from '../../services/products';
 import { DataTable, type Column } from '../../components/ui/DataTable';
@@ -118,20 +118,28 @@ export function GoodsReceiptsPage() {
       const { data: receipt } = await supabase.from('goods_receipts').select('id, supplier_id, purchase_order_id, total').eq('id', id).single();
       const { data: items } = await supabase.from('goods_receipt_items').select('*').eq('goods_receipt_id', id);
 
-      // Reverse inventory and batch deductions
+      // Reverse inventory and batch additions (ADD BACK, not subtract)
       for (const item of items || []) {
         const qty = Number(item.quantity);
 
-        // Add back to inventory
+        // Add back to inventory quantity
         const { data: inv } = await supabase.from('inventory').select('quantity').eq('product_id', item.product_id).maybeSingle();
         if (inv) {
-          await supabase.from('inventory').update({ quantity: Math.max(0, Number(inv.quantity) - qty) }).eq('product_id', item.product_id);
+          await supabase.from('inventory').update({ quantity: Number(inv.quantity) + qty }).eq('product_id', item.product_id);
         }
 
-        // Reverse batch quantities (most recent batch)
-        const { data: batch } = await supabase.from('inventory_batches').select('id, remaining_quantity').eq('product_id', item.product_id).order('created_at', { ascending: false }).limit(1).single();
-        if (batch) {
-          await supabase.from('inventory_batches').update({ remaining_quantity: Math.max(0, Number(batch.remaining_quantity) - qty) }).eq('id', batch.id);
+        // Reverse the specific batch linked to this receipt item
+        if (item.batch_id) {
+          const { data: batch } = await supabase.from('inventory_batches').select('id, remaining_quantity').eq('id', item.batch_id).single();
+          if (batch) {
+            await supabase.from('inventory_batches').update({ remaining_quantity: Number(batch.remaining_quantity) + qty }).eq('id', batch.id);
+          }
+        } else {
+          // Fallback: reverse most recent batch for this product
+          const { data: batch } = await supabase.from('inventory_batches').select('id, remaining_quantity').eq('product_id', item.product_id).order('created_at', { ascending: false }).limit(1).single();
+          if (batch) {
+            await supabase.from('inventory_batches').update({ remaining_quantity: Number(batch.remaining_quantity) + qty }).eq('id', batch.id);
+          }
         }
 
         // Delete stock movement
@@ -215,6 +223,14 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // Declare state FIRST before using in queries
+  const [supplierId, setSupplierId] = useState('');
+  const [notes, setNotes] = useState('');
+  const [purchaseOrderId, setPurchaseOrderId] = useState('');
+  const [items, setItems] = useState<
+    { product_id: string; quantity: number; unit_cost: number; batch_number: string; expiry_date: string }[]
+  >([{ product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
+
   const { data: suppliers = [] } = useQuery({
     queryKey: ['suppliers'],
     queryFn: () => fetchSuppliers({}).then((r) => r.data),
@@ -233,32 +249,32 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
     },
   });
 
-  const [supplierId, setSupplierId] = useState('');
-  const [notes, setNotes] = useState('');
-  const [purchaseOrderId, setPurchaseOrderId] = useState('');
-  const [items, setItems] = useState<
-    { product_id: string; quantity: number; unit_cost: number; batch_number: string; expiry_date: string }[]
-  >([{ product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
+  // Fetch full PO details with items when needed
+  const { data: fullPO } = useQuery({
+    queryKey: ['purchase-order-full', purchaseOrderId],
+    queryFn: () => (purchaseOrderId ? fetchPurchaseOrder(purchaseOrderId) : null),
+    enabled: !!purchaseOrderId,
+  });
 
-  // Auto-fill items when a PO is selected
+  // Auto-fill items when a full PO is loaded
   useEffect(() => {
-    if (purchaseOrderId) {
-      const po = pendingPOs.find((p) => p.id === purchaseOrderId);
-      if (po && (po as any).purchase_order_items) {
-        setSupplierId((po as any).supplier_id || '');
-        const poItems = (po as any).purchase_order_items
-          .map((item: Record<string, unknown>) => ({
-            product_id: item.product_id as string,
-            quantity: Number(item.quantity) - Number(item.received_quantity || 0),
-            unit_cost: Number(item.unit_cost),
-            batch_number: '',
-            expiry_date: '',
-          }))
-          .filter((i: { quantity: number }) => i.quantity > 0);
-        if (poItems.length > 0) setItems(poItems);
+    if (fullPO && (fullPO as any).purchase_order_items) {
+      setSupplierId((fullPO as any).supplier_id || '');
+      const poItems = (fullPO as any).purchase_order_items
+        .map((item: Record<string, unknown>) => ({
+          product_id: item.product_id as string,
+          quantity: Number(item.quantity) - Number(item.received_quantity || 0),
+          unit_cost: Number(item.unit_cost),
+          batch_number: '',
+          expiry_date: '',
+        }))
+        .filter((i: { quantity: number }) => i.quantity > 0);
+      if (poItems.length > 0) {
+        setItems(poItems);
+        toast('success', `Auto-filled ${poItems.length} items from Purchase Order`);
       }
     }
-  }, [purchaseOrderId, pendingPOs]);
+  }, [fullPO]);
 
   const addItem = () =>
     setItems([...items, { product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
@@ -336,16 +352,13 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
             onChange={(e) => setPurchaseOrderId(e.target.value)}
             className="select-field"
           >
-            <option value="">Receive without PO</option>
+            <option value="">Select a PO to auto-fill items</option>
             {pendingPOs.map((po) => (
               <option key={(po as any).id} value={(po as any).id}>
-                {(po as any).order_number} — {formatCurrency(Number((po as any).total))}
+                {(po as any).order_number} • {(po as any).suppliers?.name} • {formatCurrency(Number((po as any).total))}
               </option>
             ))}
           </select>
-          <p className="text-xs text-gray-400 mt-1">
-            Select a pending PO to auto-fill items and mark it as received
-          </p>
         </div>
 
         <div>
@@ -368,88 +381,95 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
           <div className="flex items-center justify-between">
             <label className="label mb-0">Items</label>
             <button onClick={addItem} className="btn-secondary text-xs py-1">
-              <Plus size={14} className="mr-1" /> Add Item
+              + Add Item
             </button>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
+          <div className="overflow-x-auto border rounded-lg">
+            <table className="min-w-full text-sm bg-white">
               <thead>
-                <tr className="border-b text-left text-xs text-gray-500">
-                  <th className="py-2 px-2">Product</th>
-                  <th className="py-2 px-2">Qty</th>
-                  <th className="py-2 px-2">Unit Cost</th>
-                  <th className="py-2 px-2">Batch #</th>
-                  <th className="py-2 px-2">Expiry</th>
-                  <th className="py-2 px-2">Total</th>
-                  <th className="py-2 px-2"></th>
+                <tr className="border-b bg-gray-50 text-left text-xs font-semibold text-gray-700">
+                  <th className="py-3 px-3">Product</th>
+                  <th className="py-3 px-3 text-right">Qty</th>
+                  <th className="py-3 px-3 text-right">Unit Cost</th>
+                  <th className="py-3 px-3">Batch #</th>
+                  <th className="py-3 px-3">Expiry</th>
+                  <th className="py-3 px-3 text-right">Total</th>
+                  <th className="py-3 px-3"></th>
                 </tr>
               </thead>
               <tbody>
-                {items.map((item, idx) => (
-                  <tr key={idx} className="border-b">
-                    <td className="py-2 px-2">
-                      <select
-                        value={item.product_id}
-                        onChange={(e) => updateItem(idx, 'product_id', e.target.value)}
-                        className="select-field text-sm"
-                      >
-                        <option value="">Select product</option>
-                        {productsData?.map((p: { id: string; name: string }) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-2 px-2">
-                      <input
-                        type="number"
-                        value={item.quantity}
-                        onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
-                        className="input-field w-20 text-sm"
-                        min="1"
-                      />
-                    </td>
-                    <td className="py-2 px-2">
-                      <input
-                        type="number"
-                        value={item.unit_cost}
-                        onChange={(e) => updateItem(idx, 'unit_cost', Number(e.target.value))}
-                        className="input-field w-28 text-sm"
-                        min="0"
-                        step="0.01"
-                      />
-                    </td>
-                    <td className="py-2 px-2">
-                      <input
-                        value={item.batch_number}
-                        onChange={(e) => updateItem(idx, 'batch_number', e.target.value)}
-                        className="input-field w-24 text-sm"
-                        placeholder="Auto"
-                      />
-                    </td>
-                    <td className="py-2 px-2">
-                      <input
-                        type="date"
-                        value={item.expiry_date}
-                        onChange={(e) => updateItem(idx, 'expiry_date', e.target.value)}
-                        className="input-field w-32 text-sm"
-                      />
-                    </td>
-                    <td className="py-2 px-2 font-medium">
-                      {formatCurrency(item.quantity * item.unit_cost)}
-                    </td>
-                    <td className="py-2 px-2">
-                      <button onClick={() => removeItem(idx)} className="text-red-500 hover:text-red-700">
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {items.map((item, idx) => {
+                  const isAutoFilled = purchaseOrderId && item.unit_cost > 0 && item.quantity > 0;
+                  return (
+                    <tr key={idx} className={`border-b hover:bg-gray-50 ${isAutoFilled ? 'bg-blue-50' : ''}`}>
+                      <td className="py-2 px-3">
+                        <select
+                          value={item.product_id}
+                          onChange={(e) => updateItem(idx, 'product_id', e.target.value)}
+                          className="select-field text-sm"
+                        >
+                          <option value="">Select product</option>
+                          {productsData?.map((p: { id: string; name: string }) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          type="number"
+                          value={item.quantity}
+                          onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
+                          className="input-field w-20 text-sm text-right"
+                          min="1"
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          type="number"
+                          value={item.unit_cost}
+                          onChange={(e) => updateItem(idx, 'unit_cost', Number(e.target.value))}
+                          className={`input-field w-28 text-sm text-right ${isAutoFilled ? 'bg-blue-100 border-blue-300' : ''}`}
+                          min="0"
+                          step="0.01"
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          value={item.batch_number}
+                          onChange={(e) => updateItem(idx, 'batch_number', e.target.value)}
+                          className="input-field w-24 text-sm"
+                          placeholder="Auto"
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          type="date"
+                          value={item.expiry_date}
+                          onChange={(e) => updateItem(idx, 'expiry_date', e.target.value)}
+                          className="input-field w-32 text-sm"
+                        />
+                      </td>
+                      <td className="py-2 px-3 font-medium text-right min-w-20">
+                        {formatCurrency(item.quantity * item.unit_cost)}
+                      </td>
+                      <td className="py-2 px-3">
+                        <button onClick={() => removeItem(idx)} className="text-red-500 hover:text-red-700 p-1">
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          
+          {purchaseOrderId && items.some(i => i.unit_cost > 0) && (
+            <p className="text-xs text-green-600">Auto-filled from Purchase Order</p>
+          )}
         </div>
 
         <div className="text-right text-lg font-bold">Total: {formatCurrency(total)}</div>

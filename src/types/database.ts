@@ -173,6 +173,7 @@ export interface Sale {
   id: string;
   invoice_number: string;
   customer_id: string | null;
+  shift_id: string | null;
   status: 'HELD' | 'COMPLETED' | 'CANCELLED' | 'RETURNED';
   sale_date: string;
   subtotal: number;

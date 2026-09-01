@@ -27,7 +27,15 @@ export function SalesReturnsPage() {
 
   const { data: sales } = useQuery({
     queryKey: ['sales-all'],
-    queryFn: () => fetchSales({ pageSize: 100 }).then((r) => r.data),
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('sales')
+        .select('id, invoice_number, customer_id, total, sale_date, status')
+        .eq('status', 'COMPLETED')
+        .order('sale_date', { ascending: false })
+        .limit(100);
+      return data || [];
+    },
   });
 
   return (
@@ -73,12 +81,14 @@ export function SalesReturnsPage() {
   );
 }
 
-function SalesReturnForm({ isOpen, onClose, sales }: { isOpen: boolean; onClose: () => void; sales: { id: string; invoice_number: string; customer_id: string | null }[] }) {
+function SalesReturnForm({ isOpen, onClose, sales }: { isOpen: boolean; onClose: () => void; sales: { id: string; invoice_number: string; customer_id: string | null; total: number; sale_date: string }[] }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [saleId, setSaleId] = useState('');
   const [reason, setReason] = useState('');
   const [total, setTotal] = useState(0);
+
+  const selectedSale = sales.find((s) => s.id === saleId);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -122,14 +132,73 @@ function SalesReturnForm({ isOpen, onClose, sales }: { isOpen: boolean; onClose:
     <Modal isOpen={isOpen} onClose={onClose} title="New Sales Return" size="md"
       footer={<><button onClick={onClose} className="btn-secondary">Cancel</button><button onClick={() => mutation.mutate()} className="btn-danger" disabled={!saleId || !reason || mutation.isPending}>{mutation.isPending ? 'Processing...' : 'Submit Return'}</button></>}>
       <div className="space-y-4">
-        <div><label className="label">Original Sale</label>
-          <select value={saleId} onChange={(e) => setSaleId(e.target.value)} className="select-field">
-            <option value="">Select sale</option>
-            {sales.map((s) => <option key={s.id} value={s.id}>{s.invoice_number}</option>)}
+        <div>
+          <label className="label">Original Sale</label>
+          <select value={saleId} onChange={(e) => {
+              const id = e.target.value;
+              setSaleId(id);
+              const sale = sales.find((s) => s.id === id);
+              if (sale) setTotal(Number(sale.total));
+            }} className="select-field">
+            <option value="">Select sale to refund</option>
+            {sales.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.invoice_number} — {formatCurrency(Number(s.total))}
+              </option>
+            ))}
           </select>
         </div>
-        <div><label className="label">Reason</label><input value={reason} onChange={(e) => setReason(e.target.value)} className="input-field" placeholder="Reason for return" /></div>
-        <div><label className="label">Refund Amount</label><input type="number" value={total || ''} onChange={(e) => setTotal(Number(e.target.value))} className="input-field" min="0" step="0.01" /></div>
+
+        {selectedSale && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600">Invoice:</span>
+              <span className="font-medium">{selectedSale.invoice_number}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600">Date:</span>
+              <span className="font-medium">{formatDate(selectedSale.sale_date)}</span>
+            </div>
+            <div className="flex justify-between text-sm border-t border-blue-200 mt-2 pt-2">
+              <span className="text-gray-600">Sale Total:</span>
+              <span className="text-lg font-bold text-blue-700">{formatCurrency(Number(selectedSale.total))}</span>
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label className="label">Reason</label>
+          <input value={reason} onChange={(e) => setReason(e.target.value)} className="input-field" placeholder="e.g. Expired, Damaged, Wrong item" />
+        </div>
+
+        <div>
+          <label className="label">Refund Amount</label>
+          <div className="relative">
+            <input
+              type="number"
+              value={total || ''}
+              onChange={(e) => setTotal(Number(e.target.value))}
+              className="input-field pr-16"
+              min="0"
+              max={selectedSale ? Number(selectedSale.total) : undefined}
+              step="0.01"
+            />
+            {selectedSale && (
+              <button
+                type="button"
+                onClick={() => setTotal(Number(selectedSale.total))}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition"
+              >
+                Full Amount
+              </button>
+            )}
+          </div>
+          {selectedSale && total > 0 && (
+            <p className="mt-1 text-xs text-gray-500">
+              Refunding {formatCurrency(total)} of {formatCurrency(Number(selectedSale.total))} sale total
+            </p>
+          )}
+        </div>
       </div>
     </Modal>
   );
