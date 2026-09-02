@@ -38,6 +38,11 @@ export function SuppliersPage() {
     onError: (e: Error) => toast('error', e.message),
   });
 
+  // Calculate total payables
+  const totalPayables = (data?.data || []).reduce((sum: number, supplier: any) => {
+    return sum + (Number(supplier.opening_balance) || 0);
+  }, 0);
+
   const columns: Column<Record<string, unknown>>[] = [
     { key: 'name', header: 'Supplier', render: (row) => (
       <div>
@@ -68,6 +73,22 @@ export function SuppliersPage() {
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
         <input type="text" placeholder="Search suppliers..." value={search} onChange={(e) => setSearch(e.target.value)} className="input-field pl-10" />
+      </div>
+
+      {/* Balance Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Suppliers</p>
+          <p className="text-2xl font-bold text-gray-900">{data?.data?.length || 0}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Payables</p>
+          <p className="text-2xl font-bold text-red-600">{formatCurrency(totalPayables)}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Credit Limit</p>
+          <p className="text-2xl font-bold text-blue-600">{formatCurrency((data?.data || []).reduce((sum: number, s: any) => sum + Number(s.credit_limit || 0), 0))}</p>
+        </div>
       </div>
 
       <div className="card p-0">

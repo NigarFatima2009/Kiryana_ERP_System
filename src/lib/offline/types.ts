@@ -167,6 +167,30 @@ export interface OfflineSaleItem {
   created_at: number; // timestamp
 }
 
+// ==================== OFFLINE SHIFTS ====================
+
+/**
+ * Shift created while offline.
+ * Synced to Supabase when connection returns.
+ */
+export interface OfflineShift {
+  id: string;
+  user_id: string;
+  opened_at: string; // ISO string
+  closed_at: string | null;
+  opening_cash: number;
+  closing_cash: number | null;
+  expected_cash: number | null;
+  variance: number | null;
+  status: 'OPEN' | 'CLOSED';
+  notes: string | null;
+  // Sync tracking
+  synced: boolean;
+  server_shift_id: string | null; // Populated after sync
+  created_at: number; // timestamp
+  synced_at: number | null;
+}
+
 // ==================== SYNC QUEUE ====================
 
 /**

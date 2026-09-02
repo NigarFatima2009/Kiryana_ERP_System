@@ -20,6 +20,8 @@ import {
   markAsSyncFailed,
   markAsConflict,
   markAsDuplicate,
+  getOfflineSalesStats,
+  getPendingOfflineSalesCount,
 } from './offlineSales';
 import { startSync, endSync, setSyncError, clearSyncError, updateSyncStats } from './connectivity';
 import type { SyncResult, OfflineSale } from './types';
@@ -45,10 +47,13 @@ export async function performOfflineSync(): Promise<{
     console.log(`[Sync] Found ${pendingSales.length} pending sales`);
 
     if (pendingSales.length === 0) {
-      const stats = await getSyncQueueStats();
+      const [stats, pendingCount] = await Promise.all([
+        getOfflineSalesStats(),
+        getPendingOfflineSalesCount(),
+      ]);
       clearSyncError();
       endSync(false);
-      updateSyncStats(0, stats.synced, stats.failed);
+      updateSyncStats(pendingCount, stats.synced, stats.failed);
       return { success: true, synced: 0, failed: 0, conflicts: 0 };
     }
 
@@ -68,10 +73,13 @@ export async function performOfflineSync(): Promise<{
       }
     }
 
-    const finalStats = await getSyncQueueStats();
+    const [finalStats, pendingCount] = await Promise.all([
+      getOfflineSalesStats(),
+      getPendingOfflineSalesCount(),
+    ]);
     clearSyncError();
     endSync(failed > 0 || conflicts > 0);
-    updateSyncStats(finalStats.pending, synced, failed);
+    updateSyncStats(pendingCount, finalStats.synced, finalStats.failed);
 
     console.log(`[Sync] Done: ${synced} synced, ${failed} failed, ${conflicts} conflicts`);
     return { success: failed === 0 && conflicts === 0, synced, failed, conflicts };

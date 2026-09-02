@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { CreditCard, Search, DollarSign, BookOpen } from 'lucide-react';
+import { CreditCard, Search, DollarSign, BookOpen, Download } from 'lucide-react';
 import { fetchCustomers, fetchCustomerTransactions, fetchCustomerBalance, receiveCustomerPayment } from '../../services/customers';
 import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/Toast';
@@ -57,7 +57,25 @@ export function KhataPage() {
 
   const { data: transactions, isLoading } = useQuery({
     queryKey: ['customer-transactions', selectedCustomer],
-    queryFn: () => fetchCustomerTransactions(selectedCustomer),
+    queryFn: async () => {
+      const txns = await fetchCustomerTransactions(selectedCustomer);
+      // Fetch invoice numbers for CREDIT_SALE transactions
+      const saleRefs = txns
+        .filter((t: any) => t.transaction_type === 'CREDIT_SALE' && t.reference_id)
+        .map((t: any) => t.reference_id);
+      if (saleRefs.length > 0) {
+        const { data: sales } = await supabase
+          .from('sales')
+          .select('id, invoice_number')
+          .in('id', saleRefs);
+        const saleMap = new Map((sales || []).map((s: any) => [s.id, s.invoice_number]));
+        return txns.map((t: any) => ({
+          ...t,
+          invoice_number: t.reference_id ? saleMap.get(t.reference_id) || null : null,
+        }));
+      }
+      return txns;
+    },
     enabled: !!selectedCustomer,
   });
 
@@ -96,15 +114,75 @@ export function KhataPage() {
     return { ...t, running: runningBalance };
   }).reverse();
 
+  // CSV export function
+  const exportToCSV = () => {
+    if (!selectedCustomerData || !ledgerWithBalance) return;
+
+    const headers = ['Date', 'Type', 'Amount', 'Balance', 'Narration'];
+    const rows = ledgerWithBalance.map((t) => [
+      new Date(t.created_at).toLocaleDateString('en-US'),
+      t.transaction_type,
+      formatCurrency(Number(t.amount)),
+      formatCurrency(Number(t.running)),
+      t.narration || '-',
+    ]);
+
+    // Combine headers and rows
+    const csvContent = [
+      ['Customer Ledger Export'],
+      ['Customer:', selectedCustomerData.name],
+      ['Export Date:', new Date().toLocaleString('en-US')],
+      [''],
+      [headers.join(',')],
+      ...rows,
+      [''],
+      ['Final Balance:', formatCurrency(balance || 0)],
+    ].map((row: any) => (Array.isArray(row) ? row.join(',') : row)).join('\n');
+
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `khata_${selectedCustomerData.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Customer Khata</h1>
-        {selectedCustomer && (
-          <button onClick={() => setShowPayment(true)} className="btn-success">
-            <DollarSign className="mr-2 h-4 w-4" /> Record Payment
-          </button>
-        )}
+        <div className="flex gap-2">
+          {selectedCustomer && (
+            <>
+              <button onClick={exportToCSV} className="btn-secondary">
+                <Download className="mr-2 h-4 w-4" /> Export CSV
+              </button>
+              <button onClick={() => setShowPayment(true)} className="btn-success">
+                <DollarSign className="mr-2 h-4 w-4" /> Record Payment
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Balance Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Customers</p>
+          <p className="text-2xl font-bold text-gray-900">{customers.length}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Receivables</p>
+          <p className="text-2xl font-bold text-blue-600">{formatCurrency((customersWithBalance.data || []).reduce((sum: number, c: any) => sum + Math.max(0, c.balance || 0), 0))}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Active Balances</p>
+          <p className="text-2xl font-bold text-red-600">{(customersWithBalance.data || []).filter((c: any) => c.balance > 0).length}</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -170,7 +248,13 @@ export function KhataPage() {
                           </td>
                           <td className="py-2 font-medium">{formatCurrency(Number(t.amount))}</td>
                           <td className={`py-2 font-bold ${t.running > 0 ? 'text-red-600' : 'text-green-600'}`}>{formatCurrency(t.running)}</td>
-                          <td className="py-2 text-gray-500 text-xs">{t.narration || '-'}</td>
+                          <td className="py-2 text-gray-500 text-xs">
+                            {t.invoice_number && (
+                              <span className="font-medium text-blue-600">{t.invoice_number}</span>
+                            )}
+                            {t.narration && <span className="ml-1">{t.narration}</span>}
+                            {!t.invoice_number && !t.narration && '-'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

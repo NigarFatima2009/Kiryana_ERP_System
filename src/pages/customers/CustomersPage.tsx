@@ -111,6 +111,22 @@ export function CustomersPage() {
         <input type="text" placeholder="Search customers..." value={search} onChange={(e) => setSearch(e.target.value)} className="input-field pl-10" />
       </div>
 
+      {/* Balance Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Customers</p>
+          <p className="text-2xl font-bold text-gray-900">{data?.data?.length || 0}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Receivables</p>
+          <p className="text-2xl font-bold text-blue-600">{formatCurrency((data?.data || []).reduce((sum: number, c: any) => sum + Math.max(0, Number(c.opening_balance || 0)), 0))}</p>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <p className="text-xs text-gray-500 font-medium mb-1">Total Credit Limit</p>
+          <p className="text-2xl font-bold text-green-600">{formatCurrency((data?.data || []).reduce((sum: number, c: any) => sum + Number(c.credit_limit || 0), 0))}</p>
+        </div>
+      </div>
+
       <div className="card p-0">
         <DataTable columns={columns} data={(data?.data || []).map((c) => c as unknown as Record<string, unknown>)} isLoading={isLoading} emptyMessage="No customers" />
       </div>

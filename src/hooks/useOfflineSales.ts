@@ -10,6 +10,7 @@ import {
   getAllOfflineSales,
   getPendingOfflineSalesCount,
   getOfflineSalesStats,
+  OFFLINE_SALES_CHANGED_EVENT,
 } from '../lib/offline/offlineSales';
 import type { OfflineSale } from '../lib/offline/types';
 
@@ -48,12 +49,14 @@ export function usePendingOfflineSales() {
     }
 
     load();
+    window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
 
     // Poll every 5 seconds for updates
     const interval = setInterval(load, 5000);
 
     return () => {
       mounted = false;
+      window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
       clearInterval(interval);
     };
   }, []);
@@ -82,12 +85,14 @@ export function usePendingOfflineSalesCount() {
     }
 
     load();
+    window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
 
     // Poll every 5 seconds
     const interval = setInterval(load, 5000);
 
     return () => {
       mounted = false;
+      window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
       clearInterval(interval);
     };
   }, []);
@@ -121,12 +126,14 @@ export function useAllOfflineSales() {
     }
 
     load();
+    window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
 
     // Refresh every 10 seconds
     const interval = setInterval(load, 10_000);
 
     return () => {
       mounted = false;
+      window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
       clearInterval(interval);
     };
   }, []);
@@ -160,12 +167,14 @@ export function useOfflineSalesStats() {
     }
 
     load();
+    window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
 
     // Poll every 10 seconds
     const interval = setInterval(load, 10_000);
 
     return () => {
       mounted = false;
+      window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, load);
       clearInterval(interval);
     };
   }, []);

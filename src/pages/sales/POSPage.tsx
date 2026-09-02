@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Search, ShoppingCart, Minus, Plus, Trash2, User, CreditCard, DollarSign, PauseCircle, X } from 'lucide-react';
 import { searchProductsForPOS, completeSale, holdSale, fetchHeldSales, resumeSale, cancelSale } from '../../services/sales';
+import { createOfflineSale } from '../../lib/offline/offlineSales';
+import { getNetworkStatus } from '../../lib/offline/connectivity';
 import { fetchCustomers } from '../../services/customers';
 import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/Toast';
@@ -462,11 +464,56 @@ function PaymentModal({ total, customerId, cart, discount, tax, onClose, onSucce
   };
 
   const saleMutation = useMutation({
-    mutationFn: () => completeSale({ customer_id: customerId || undefined, cart, discount, tax, payments }),
-    onSuccess: async () => {
-      // Invalidate ALL queries to force refetch on next access
-      queryClient.invalidateQueries();
-      toast('success', 'Sale completed!');
+    mutationFn: async () => {
+      // Read connectivity at the instant checkout is pressed. React state can
+      // be one render behind a browser offline event, which previously made
+      // the user wait for a request that could not complete.
+      const connection = getNetworkStatus();
+      const saveLocally = !navigator.onLine || connection.status !== 'ONLINE';
+
+      if (!saveLocally) {
+        try {
+          const result = await completeSale({ customer_id: customerId || undefined, cart, discount, tax, payments });
+          return { mode: 'online', result };
+        } catch (err) {
+          // Online sale failed — save offline as fallback
+          console.warn('[POS] Online sale failed, saving offline:', err);
+          await createOfflineSale({
+            items: cart.map(item => ({
+              product_id: item.product.id, product_name: item.product.name,
+              product_sku: item.product.sku, quantity: item.quantity,
+              unit_price: item.unit_price, discount: item.discount, tax: item.tax_amount,
+            })),
+            customer_id: customerId || undefined,
+            discount, tax, total,
+            payment_methods: payments.map(p => ({ method: p.method, amount: p.amount, reference: p.reference })),
+          });
+          return { mode: 'offline_fallback' };
+        }
+      } else {
+        // Definitely offline — save to IndexedDB
+        await createOfflineSale({
+          items: cart.map(item => ({
+            product_id: item.product.id, product_name: item.product.name,
+            product_sku: item.product.sku, quantity: item.quantity,
+            unit_price: item.unit_price, discount: item.discount, tax: item.tax_amount,
+          })),
+          customer_id: customerId || undefined,
+          discount, tax, total,
+          payment_methods: payments.map(p => ({ method: p.method, amount: p.amount, reference: p.reference })),
+        });
+        return { mode: 'offline' };
+      }
+    },
+    onSuccess: (data: any) => {
+      // Close the sale immediately. Background refreshes must not make an
+      // offline checkout wait on every cached query before showing its receipt.
+      void queryClient.invalidateQueries();
+      if (data?.mode === 'online') {
+        toast('success', 'Sale completed!');
+      } else {
+        toast('success', 'Sale saved offline — will sync when connected');
+      }
       onSuccess();
     },
     onError: (e: Error) => toast('error', e.message),

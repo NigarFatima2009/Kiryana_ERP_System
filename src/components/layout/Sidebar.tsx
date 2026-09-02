@@ -59,7 +59,6 @@ const navigation: NavGroup[] = [
       { label: 'Stock', path: '/stock', icon: <Boxes size={18} /> },
       { label: 'Stock Movements', path: '/stock-movements', icon: <ArrowLeftRight size={18} /> },
       { label: 'Batches & Expiry', path: '/batches', icon: <AlertTriangle size={18} /> },
-      { label: 'Inventory Valuation', path: '/valuation', icon: <BarChart3 size={18} /> },
     ],
     roles: ['OWNER'],
   },
@@ -150,6 +149,42 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
     const initial: Record<string, boolean> = {};
     navigation.forEach((g) => { initial[g.label] = true; });
     return initial;
+  });
+
+  // Fetch low stock count for badge
+  const { data: lowStockCount = 0 } = useQuery({
+    queryKey: ['low-stock-count'],
+    queryFn: async () => {
+      const { supabase } = await import('../../lib/supabase');
+      const { data: inv } = await supabase.from('inventory').select('product_id, quantity');
+      const { data: prods } = await supabase.from('products').select('id, reorder_level').eq('active', true);
+      const reorderMap = new Map((prods || []).map((p: any) => [p.id, p.reorder_level]));
+      return (inv || []).filter((i: any) => {
+        const rl = reorderMap.get(i.product_id) || 0;
+        return rl > 0 && i.quantity <= rl;
+      }).length;
+    },
+    refetchInterval: 60000,
+    staleTime: 60000,
+  });
+
+  // Fetch expiring soon count for badge
+  const { data: expiringCount = 0 } = useQuery({
+    queryKey: ['expiring-count'],
+    queryFn: async () => {
+      const { supabase } = await import('../../lib/supabase');
+      const today = new Date().toISOString().split('T')[0];
+      const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const { count } = await supabase
+        .from('inventory_batches')
+        .select('id', { count: 'exact', head: true })
+        .lte('expiry_date', expiry)
+        .gt('expiry_date', today)
+        .gt('remaining_quantity', 0);
+      return count || 0;
+    },
+    refetchInterval: 60000,
+    staleTime: 60000,
   });
 
   // Fetch page permissions — cached in localStorage for offline use
@@ -301,6 +336,16 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                           }`}
                         >
                           {item.label}
+                          {item.path === '/stock' && lowStockCount > 0 && (
+                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold">
+                              {lowStockCount}
+                            </span>
+                          )}
+                          {item.path === '/batches' && expiringCount > 0 && (
+                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-orange-500 text-white text-[10px] font-bold">
+                              {expiringCount}
+                            </span>
+                          )}
                         </Link>
                       ))}
                     </div>
@@ -316,13 +361,23 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                       key={item.path}
                       to={item.path}
                       title={item.label}
-                      className={`flex items-center justify-center rounded-lg p-2 my-0.5 ${
+                      className={`relative flex items-center justify-center rounded-lg p-2 my-0.5 ${
                         isActive(item.path)
                           ? 'bg-blue-50 text-blue-700'
                           : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                       }`}
                     >
                       {item.icon}
+                      {item.path === '/stock' && lowStockCount > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-500 text-white text-[8px] font-bold">
+                          {lowStockCount}
+                        </span>
+                      )}
+                      {item.path === '/batches' && expiringCount > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full bg-orange-500 text-white text-[8px] font-bold">
+                          {expiringCount}
+                        </span>
+                      )}
                     </Link>
                   ))}
                 </div>

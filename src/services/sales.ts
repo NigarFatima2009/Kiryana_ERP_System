@@ -95,11 +95,12 @@ export async function completeSale(params: {
   if (!rpcError && currentShift) {
     shiftId = (currentShift as any)?.id || null;
   } else {
-    // Fallback: Query directly
+    // Fallback: Query directly for THIS user only
     const { data } = await supabase
       .from('cashier_shifts')
       .select('id')
       .eq('status', 'OPEN')
+      .eq('user_id', user?.id || '')
       .order('opened_at', { ascending: false })
       .limit(1)
       .single();
@@ -275,14 +276,30 @@ export async function fetchSales(params?: { page?: number; pageSize?: number; cu
   // Fetch profiles for cashiers (created_by field)
   const cashierIds = [...new Set((salesData || []).map((s) => s.created_by).filter(Boolean))];
   const { data: profiles } = cashierIds.length > 0 
-    ? await supabase.from('profiles').select('id, email').in('id', cashierIds)
+    ? await supabase.from('profiles').select('id, email, full_name').in('id', cashierIds)
     : { data: [] };
   const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
+
+  const saleIds = (salesData || []).map((sale) => sale.id);
+  const { data: returnData } = saleIds.length > 0
+    ? await supabase.from('sales_returns').select('sale_id, total, refund_method').in('sale_id', saleIds)
+    : { data: [] };
+  const returnMap = new Map<string, { total: number; refunds: Array<{ total: number; refund_method: string }> }>();
+  (returnData || []).forEach((saleReturn: any) => {
+    const entry = returnMap.get(saleReturn.sale_id) || { total: 0, refunds: [] };
+    const amount = Number(saleReturn.total || 0);
+    entry.total += amount;
+    entry.refunds.push({ total: amount, refund_method: saleReturn.refund_method });
+    returnMap.set(saleReturn.sale_id, entry);
+  });
 
   const merged = (salesData || []).map((s) => ({
     ...s,
     customers: s.customer_id ? { name: custMap.get(s.customer_id) || 'Unknown' } : null,
     profiles: s.created_by ? profileMap.get(s.created_by) || null : null,
+    returned_total: returnMap.get(s.id)?.total || 0,
+    net_total: Math.max(0, Number(s.total) - (returnMap.get(s.id)?.total || 0)),
+    returns: returnMap.get(s.id)?.refunds || [],
   }));
 
   const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
@@ -298,11 +315,12 @@ export async function fetchSale(id: string) {
   if (error) throw error;
 
   // Fetch related data separately
-  const [itemsResult, paymentsResult, customerResult, profileResult] = await Promise.all([
+  const [itemsResult, paymentsResult, customerResult, profileResult, returnsResult] = await Promise.all([
     supabase.from('sale_items').select('*').eq('sale_id', id),
     supabase.from('sale_payments').select('*').eq('sale_id', id),
     sale.customer_id ? supabase.from('customers').select('*').eq('id', sale.customer_id).single() : null,
-    sale.created_by ? supabase.from('profiles').select('id, email').eq('id', sale.created_by).single() : null,
+    sale.created_by ? supabase.from('profiles').select('id, email, full_name').eq('id', sale.created_by).single() : null,
+    supabase.from('sales_returns').select('id, return_number, total, reason, refund_method, created_at').eq('sale_id', id).order('created_at', { ascending: false }),
   ]);
 
   // Fetch products for items
@@ -319,6 +337,8 @@ export async function fetchSale(id: string) {
     ...sale,
     sale_items: items,
     sale_payments: paymentsResult.data || [],
+    sales_returns: returnsResult.data || [],
+    returned_total: (returnsResult.data || []).reduce((sum, saleReturn) => sum + Number(saleReturn.total), 0),
     customers: customerResult?.data || null,
     profiles: profileResult?.data || null,
   };
@@ -328,39 +348,35 @@ export async function fetchSale(id: string) {
  * Fetch all sales for a specific shift (or today's sales if shift_id is null)
  */
 export async function fetchSalesForShift(shiftId: string) {
-  // First try to get sales linked to this shift
+  // Get the current user to filter sales
+  const { data: { user } } = await supabase.auth.getUser();
+  const userId = user?.id;
+
+  const today = new Date().toISOString().split('T')[0];
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+
+  // Strategy 1: Get sales linked to this specific shift with creator info
   const { data: linkedSales } = await supabase
     .from('sales')
-    .select('*')
+    .select(`
+      *,
+      profiles:created_by(email)
+    `)
     .eq('shift_id', shiftId)
-    .eq('status', 'completed')
+    .in('status', ['COMPLETED', 'RETURNED'])
     .order('created_at', { ascending: false });
 
-  // If no sales found, try fallback: get all completed sales from today
   let salesToUse = linkedSales || [];
-  if (!salesToUse || salesToUse.length === 0) {
-    const today = new Date().toISOString().split('T')[0];
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
-    
-    const { data: todaySales } = await supabase
-      .from('sales')
-      .select('*')
-      .eq('status', 'completed')
-      .gte('created_at', `${today}T00:00:00`)
-      .lt('created_at', `${tomorrow}T00:00:00`)
-      .order('created_at', { ascending: false });
-    
-    salesToUse = todaySales || [];
-  }
 
-  if (!salesToUse || salesToUse.length === 0) return [];
+  if (salesToUse.length === 0) return [];
 
-  // Fetch items for all sales
+  // Fetch items and payments for all sales
   const saleIds = salesToUse.map((s) => s.id);
-  const { data: items } = await supabase
-    .from('sale_items')
-    .select('*')
-    .in('sale_id', saleIds);
+  const [{ data: items }, { data: payments }, { data: returns }] = await Promise.all([
+    supabase.from('sale_items').select('*').in('sale_id', saleIds),
+    supabase.from('sale_payments').select('*').in('sale_id', saleIds),
+    supabase.from('sales_returns').select('sale_id, total, refund_method, return_number').in('sale_id', saleIds),
+  ]);
 
   const itemMap = new Map<string, typeof items>();
   (items || []).forEach((item) => {
@@ -368,9 +384,28 @@ export async function fetchSalesForShift(shiftId: string) {
     itemMap.get(item.sale_id)!.push(item);
   });
 
-  return salesToUse.map((sale) => ({
+  const paymentMap = new Map<string, typeof payments>();
+  (payments || []).forEach((p) => {
+    if (!paymentMap.has(p.sale_id)) paymentMap.set(p.sale_id, []);
+    paymentMap.get(p.sale_id)!.push(p);
+  });
+
+  const returnMap = new Map<string, Array<{ total: number; refund_method: string; return_number: string }>>();
+  (returns || []).forEach((saleReturn) => {
+    const existing = returnMap.get(saleReturn.sale_id) || [];
+    existing.push({ total: Number(saleReturn.total), refund_method: saleReturn.refund_method, return_number: saleReturn.return_number });
+    returnMap.set(saleReturn.sale_id, existing);
+  });
+
+  return salesToUse.map((sale: any) => ({
     ...sale,
+    created_by_email: sale.profiles?.email || 'Unknown',
+    gross_total: Number(sale.total),
+    returned_total: (returnMap.get(sale.id) || []).reduce((sum, saleReturn) => sum + saleReturn.total, 0),
+    total: Math.max(0, Number(sale.total) - (returnMap.get(sale.id) || []).reduce((sum, saleReturn) => sum + saleReturn.total, 0)),
     items: itemMap.get(sale.id) || [],
+    payments: paymentMap.get(sale.id) || [],
+    returns: returnMap.get(sale.id) || [],
   }));
 }
 
@@ -459,6 +494,9 @@ export async function completeHeldSale(params: {
     }
   }
 
+  // Get current user
+  const { data: { user } } = await supabase.auth.getUser();
+
   // Get current shift (fallback to direct query if RPC fails)
   let shiftId: string | null = null;
   const { data: currentShift, error: rpcError } = await supabase
@@ -468,11 +506,12 @@ export async function completeHeldSale(params: {
   if (!rpcError && currentShift) {
     shiftId = (currentShift as any)?.id || null;
   } else {
-    // Fallback: Query directly
+    // Fallback: Query directly for THIS user only
     const { data } = await supabase
       .from('cashier_shifts')
       .select('id')
       .eq('status', 'OPEN')
+      .eq('user_id', user?.id || '')
       .order('opened_at', { ascending: false })
       .limit(1)
       .single();
@@ -485,6 +524,7 @@ export async function completeHeldSale(params: {
     .update({
       status: 'COMPLETED',
       shift_id: shiftId,
+      created_by: user?.id || null,
       customer_id: cart[0]?.product ? existingSale.customer_id : null,
       subtotal,
       discount,
@@ -676,31 +716,43 @@ export async function processSaleReturn(params: {
   sale_id: string; customer_id?: string; reason: string; refund_method: string;
   items: { sale_item_id: string; quantity: number; amount: number }[];
 }) {
-  const total = params.items.reduce((sum, item) => sum + item.amount, 0);
-  const returnNumber = generateOrderNumber('SR');
+  const { data, error } = await supabase.rpc('create_sales_return', {
+    p_sale_id: params.sale_id,
+    p_reason: params.reason,
+    p_refund_method: params.refund_method,
+    p_items: params.items.map(item => ({
+      sale_item_id: item.sale_item_id,
+      quantity: item.quantity,
+    })),
+  });
 
-  const { data: sr, error: srError } = await supabase
-    .from('sales_returns')
-    .insert({ sale_id: params.sale_id, customer_id: params.customer_id || null, return_number: returnNumber, reason: params.reason, refund_method: params.refund_method, total })
-    .select()
-    .single();
-  if (srError) throw srError;
+  if (error) throw error;
+  if (!data?.success) throw new Error(data?.error || 'Unable to process sales return');
+  return data as { return_id: string; return_number: string; total: number; fully_returned: boolean };
+}
 
-  for (const item of params.items) {
-    await supabase.from('sales_return_items').insert({ sales_return_id: sr.id, sale_item_id: item.sale_item_id, quantity: item.quantity, amount: item.amount });
-    const { data: saleItem } = await supabase.from('sale_items').select('product_id').eq('id', item.sale_item_id).single();
-    if (saleItem) {
-      const { data: inv } = await supabase.from('inventory').select('quantity').eq('product_id', saleItem.product_id).single();
-      if (inv) await supabase.from('inventory').update({ quantity: Number(inv.quantity) + item.quantity }).eq('product_id', saleItem.product_id);
-      await supabase.from('inventory_movements').insert({ product_id: saleItem.product_id, movement_type: 'SALE_RETURN', quantity_change: item.quantity, reference_type: 'SALES_RETURN', reference_id: sr.id });
-    }
-  }
+// Quick return function - return entire sale
+export async function createSalesReturn(params: {
+  sale_id: string;
+  return_reason: string;
+  notes: string;
+}) {
+  const { data: saleItems, error } = await supabase
+    .from('sale_items')
+    .select('id, quantity, line_total')
+    .eq('sale_id', params.sale_id);
 
-  if (params.customer_id && params.refund_method === 'CUSTOMER_CREDIT') {
-    await supabase.from('customer_transactions').insert({
-      customer_id: params.customer_id, transaction_type: 'RETURN', amount: total, reference_type: 'SALES_RETURN', reference_id: sr.id, narration: `Sale return - ${returnNumber}`,
-    });
-  }
+  if (error) throw error;
+  if (!saleItems?.length) throw new Error('Sale has no returnable items');
 
-  return sr;
+  return processSaleReturn({
+    sale_id: params.sale_id,
+    reason: params.return_reason,
+    refund_method: 'CASH',
+    items: saleItems.map(item => ({
+      sale_item_id: item.id,
+      quantity: Number(item.quantity),
+      amount: Number(item.line_total),
+    })),
+  });
 }

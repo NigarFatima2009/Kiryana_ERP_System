@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from './lib/auth';
 import { MainLayout } from './components/layout/MainLayout';
 import { LoginPage } from './pages/auth/LoginPage';
@@ -12,7 +12,6 @@ import { StockPage } from './pages/inventory/StockPage';
 import { StockMovementsPage } from './pages/inventory/StockMovementsPage';
 import { BatchesPage } from './pages/inventory/BatchesPage';
 import { ReorderRecommendationsPage } from './pages/inventory/ReorderRecommendationsPage';
-import { InventoryValuationPage } from './pages/inventory/InventoryValuationPage';
 import { SuppliersPage } from './pages/purchasing/SuppliersPage';
 import { PurchaseOrdersPage } from './pages/purchasing/PurchaseOrdersPage';
 import { GoodsReceiptsPage } from './pages/purchasing/GoodsReceiptsPage';
@@ -33,12 +32,15 @@ import { AuditLogsPage } from './pages/settings/AuditLogsPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
 import { PermissionsPage } from './pages/settings/PermissionsPage';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchPagePermissions } from './services/permissions';
 import { OfflineDataViewer } from './components/dev/OfflineDataViewer';
 import { initializeOfflineDB } from './lib/offline/db';
 import { isCacheFresh, getCachedProductCount } from './lib/offline/cache';
 import { performInitialCacheSync, performOfflineSync } from './lib/offline/sync';
+import { getOfflineSalesStats, getPendingOfflineSalesCount } from './lib/offline/offlineSales';
+import { updateSyncStats } from './lib/offline/connectivity';
+import { syncOfflineShifts } from './services/cashier';
 import { useNetworkStatus } from './hooks/useOfflineStatus';
 import type { AppRole } from './types/database';
 
@@ -114,9 +116,8 @@ function RoleGuard({ children, allowedRoles, pagePath }: { children: React.React
       }
     },
     enabled: !!profile && !!pagePath && !isOwner, // Skip query for OWNER
-    staleTime: 0,
-    refetchInterval: 5000,
-    refetchIntervalInBackground: true,
+    staleTime: 300_000, // 5 minutes - permissions don't change often
+    refetchInterval: 600_000, // Only refetch every 10 minutes, not 5 seconds
     retry: 1,
   });
 
@@ -166,6 +167,14 @@ function OfflineInitializer() {
     async function init() {
       try {
         await initializeOfflineDB(user!.id);
+        // Restore the durable queue count from IndexedDB. Without this, sales
+        // saved in a previous offline session are invisible to the auto-sync
+        // manager until another sale is created.
+        const [offlineStats, pendingCount] = await Promise.all([
+          getOfflineSalesStats(),
+          getPendingOfflineSalesCount(),
+        ]);
+        updateSyncStats(pendingCount, offlineStats.synced, offlineStats.failed);
         setInitialized(true);
 
         if (navigator.onLine) {
@@ -195,21 +204,61 @@ function OfflineInitializer() {
  */
 function OfflineSyncManager() {
   const status = useNetworkStatus();
+  const queryClient = useQueryClient();
+  const syncInProgress = useRef(false);
+  const lastAttemptedPendingCount = useRef<number | null>(null);
 
   useEffect(() => {
     async function triggerSync() {
-      if (status.status === 'ONLINE' && status.pendingOperationCount > 0) {
-        console.log('[OfflineSync] Triggering auto-sync:', status.pendingOperationCount, 'pending');
-        try {
-          const result = await performOfflineSync();
-          console.log('[OfflineSync] Sync result:', result);
-        } catch (err) {
-          console.error('[OfflineSync] Auto-sync failed:', err);
+      if (status.status !== 'ONLINE') {
+        // A real reconnection gets a fresh reconciliation attempt. Do not reset
+        // during SYNCING, otherwise a failed sync would immediately retry in a loop.
+        if (status.status === 'OFFLINE' || status.status === 'CONNECTIVITY_CHECKING') {
+          lastAttemptedPendingCount.current = null;
         }
+        return;
+      }
+
+      // Read IndexedDB instead of trusting the in-memory badge count. The
+      // badge is reset on refresh, whereas the pending sale queue is durable.
+      const pendingCount = await getPendingOfflineSalesCount();
+      if (
+        pendingCount === 0 ||
+        syncInProgress.current ||
+        lastAttemptedPendingCount.current === pendingCount
+      ) {
+        return;
+      }
+
+      syncInProgress.current = true;
+      lastAttemptedPendingCount.current = pendingCount;
+      console.log('[OfflineSync] Reconciling', pendingCount, 'local sale(s)');
+      try {
+        const result = await performOfflineSync();
+        console.log('[OfflineSync] Sync result:', result);
+        
+        // After syncing sales, refresh the offline cache to get updated inventory from server
+        if (result.synced > 0) {
+          console.log('[OfflineSync] Refreshing offline cache after sync...');
+          const { refreshOfflineCache } = await import('./lib/offline/sync');
+          await refreshOfflineCache();
+          
+          // Invalidate inventory queries so UI refetches from cache
+          queryClient.invalidateQueries({ queryKey: ['inventory'] });
+          queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
+          console.log('[OfflineSync] Cache refreshed and inventory queries invalidated');
+        }
+        
+        // Also sync offline shifts
+        await syncOfflineShifts();
+      } catch (err) {
+        console.error('[OfflineSync] Auto-sync failed:', err);
+      } finally {
+        syncInProgress.current = false;
       }
     }
 
-    triggerSync();
+    void triggerSync();
   }, [status.status, status.pendingOperationCount]);
 
   return null;
@@ -254,7 +303,6 @@ export default function App() {
           <Route path="stock-movements" element={<RoleGuard allowedRoles={['OWNER']}><StockMovementsPage /></RoleGuard>} />
           <Route path="batches" element={<RoleGuard allowedRoles={['OWNER']}><BatchesPage /></RoleGuard>} />
           <Route path="reorder-recommendations" element={<RoleGuard allowedRoles={['OWNER', 'MANAGER', 'INVENTORY_MANAGER']}><ReorderRecommendationsPage /></RoleGuard>} />
-          <Route path="valuation" element={<RoleGuard allowedRoles={['OWNER', 'MANAGER', 'ACCOUNTANT']}><InventoryValuationPage /></RoleGuard>} />
           <Route path="suppliers" element={<RoleGuard allowedRoles={['OWNER']}><SuppliersPage /></RoleGuard>} />
           <Route path="purchase-orders" element={<RoleGuard allowedRoles={['OWNER']}><PurchaseOrdersPage /></RoleGuard>} />
           <Route path="goods-receipts" element={<RoleGuard allowedRoles={['OWNER']}><GoodsReceiptsPage /></RoleGuard>} />

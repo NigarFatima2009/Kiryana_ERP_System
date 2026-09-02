@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   openCashierShift,
   closeCashierShift,
+  resumeCashierShift,
   getCurrentShift,
   getShiftSummary,
   getUserShifts,
@@ -10,6 +11,7 @@ import {
 } from '../../services/cashier';
 import { fetchSalesForShift } from '../../services/sales';
 import { Clock, LogOut, AlertCircle } from 'lucide-react';
+import { MAX_SHIFT_MINUTES } from '../../services/cashier';
 import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/Toast';
 import { formatCurrency, formatDateTime } from '../../utils/helpers';
@@ -22,14 +24,17 @@ export function ShiftManagementPage() {
   const [showOpenForm, setShowOpenForm] = useState(false);
   const [showCloseForm, setShowCloseForm] = useState(false);
   const [shiftSummary, setShiftSummary] = useState<ShiftSummary | null>(null);
+  const [elapsedTime, setElapsedTime] = useState('0m');
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Get current shift
+  // Get current shift - disable auto-refetch to avoid showing stale timestamps
   const { data: currentShift, isLoading } = useQuery({
     queryKey: ['current-shift'],
     queryFn: getCurrentShift,
-    refetchInterval: 5000,
+    // Don't auto-refetch - let us control when to refresh
+    refetchInterval: false,
+    staleTime: 60000, // Consider data fresh for 60 seconds
   });
 
   // Get sales for current shift
@@ -45,8 +50,25 @@ export function ShiftManagementPage() {
     if (currentShift === null) {
       console.log('⚠️ No current shift found');
     } else if (currentShift) {
-      console.log('✅ Current shift found:', { id: currentShift.id, status: currentShift.status });
+      console.log('✅ Current shift found:', { id: currentShift.id, status: currentShift.status, opened_at: currentShift.opened_at });
     }
+  }, [currentShift]);
+
+  // Update elapsed time every second
+  useEffect(() => {
+    if (!currentShift) return;
+
+    console.log('🕐 Calculating elapsed time. opened_at:', currentShift.opened_at, 'parsed as:', getProperDate(currentShift.opened_at));
+
+    const updateElapsed = () => {
+      const elapsed = calculateTimeElapsed(currentShift.opened_at);
+      console.log('⏱️ Elapsed:', elapsed);
+      setElapsedTime(elapsed);
+    };
+
+    updateElapsed();
+    const interval = setInterval(updateElapsed, 1000);
+    return () => clearInterval(interval);
   }, [currentShift]);
 
   // Get all shifts for history
@@ -59,8 +81,12 @@ export function ShiftManagementPage() {
     mutationFn: (amount: number) => openCashierShift(amount),
     onSuccess: (data) => {
       toast('success', `Shift opened with Rs. ${formatCurrency(data.opening_cash)}`);
-      queryClient.invalidateQueries({ queryKey: ['current-shift'] });
+      // Set shift data directly so UI shows active shift immediately
+      // DO NOT invalidate current-shift - trust the RPC response which has correct client time
+      queryClient.setQueryData(['current-shift'], data as CashierShift);
+      // Only invalidate other queries
       queryClient.invalidateQueries({ queryKey: ['shift-sales'] });
+      queryClient.invalidateQueries({ queryKey: ['user-shifts'] });
       setOpeningCash('');
       setShowOpenForm(false);
     },
@@ -164,8 +190,62 @@ export function ShiftManagementPage() {
     );
   }
 
+  // Check if there's a previous open shift that needs to be resumed
+  // OR a recently closed shift that hasn't completed the 15-minute duty time
+  const previousOpenShift = allShifts?.data?.find((shift) => shift.status === 'OPEN');
+  const incompleteShift = allShifts?.data?.find((shift) => {
+    if (shift.status !== 'CLOSED' || !shift.closed_at) return false;
+    // Check if shift was closed before completing 15 minutes
+    const duration = (new Date(shift.closed_at).getTime() - new Date(shift.opened_at).getTime()) / (1000 * 60);
+    return duration < MAX_SHIFT_MINUTES;
+  });
+
+  const shiftToResume = previousOpenShift || incompleteShift;
+
   // If no current shift, show open form
   if (!currentShift) {
+    // If there's a previous open shift or incomplete shift, offer to resume it
+    if (shiftToResume) {
+      return (
+        <div className="space-y-3">
+          <h1 className="text-xl font-bold text-gray-900">Shift Management</h1>
+
+          <div className="bg-yellow-50 border border-yellow-200 rounded p-4">
+            <h2 className="font-bold text-yellow-900 mb-2">Resume Shift?</h2>
+            <p className="text-sm text-yellow-800 mb-1">
+              You have an incomplete shift from {formatDateTime(shiftToResume.opened_at)}
+            </p>
+            <p className="text-xs text-yellow-700 mb-3">
+              Duration: {Math.round((new Date(shiftToResume.closed_at || new Date()).getTime() - new Date(shiftToResume.opened_at).getTime()) / (1000 * 60))} / {MAX_SHIFT_MINUTES} minutes
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    // Re-open the closed shift (preserves original opened_at)
+                    const resumedShift = await resumeCashierShift(shiftToResume.id);
+                    queryClient.setQueryData(['current-shift'], resumedShift);
+                    toast('success', 'Shift resumed');
+                  } catch (error: any) {
+                    toast('error', `Failed to resume: ${error.message}`);
+                  }
+                }}
+                className="flex-1 px-3 py-2 bg-yellow-600 text-white rounded text-sm font-semibold hover:bg-yellow-700"
+              >
+                Resume Shift
+              </button>
+              <button
+                onClick={() => setShowOpenForm(true)}
+                className="flex-1 px-3 py-2 bg-gray-400 text-white rounded text-sm font-semibold hover:bg-gray-500"
+              >
+                Start New Shift
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="space-y-3">
         <h1 className="text-xl font-bold text-gray-900">Shift Management</h1>
@@ -262,7 +342,7 @@ export function ShiftManagementPage() {
           </div>
           <div>
             <p className="text-gray-600">Time Elapsed</p>
-            <p className="font-bold text-lg">{calculateTimeElapsed(new Date(currentShift.opened_at))}</p>
+            <p className="font-bold text-lg">{elapsedTime}</p>
           </div>
           <div>
             <p className="text-gray-600">Total Sales</p>
@@ -284,11 +364,11 @@ export function ShiftManagementPage() {
             <div 
               className="bg-blue-600 h-2 rounded-full transition-all"
               style={{
-                width: `${Math.min((new Date().getTime() - new Date(currentShift.opened_at).getTime()) / (12 * 60 * 60 * 1000) * 100, 100)}%`
+                width: `${Math.min((new Date().getTime() - getProperDate(currentShift.opened_at).getTime()) / (MAX_SHIFT_MINUTES * 60 * 1000) * 100, 100)}%`
               }}
             />
           </div>
-          <p className="text-xs text-gray-500 mt-1">Typical shift: 12 hours</p>
+          <p className="text-xs text-gray-500 mt-1">Shift duration: {MAX_SHIFT_MINUTES} minutes</p>
         </div>
       </div>
 
@@ -297,11 +377,12 @@ export function ShiftManagementPage() {
         <div>
           <h3 className="font-semibold text-gray-900 text-sm mb-2">Sales ({shiftSales.length}) - Total: {formatCurrency(totalSales)}</h3>
           <div className="bg-white border border-gray-200 rounded divide-y divide-gray-100 max-h-64 overflow-y-auto">
-            {shiftSales.map((sale) => (
+            {shiftSales.map((sale: any) => (
               <div key={sale.id} className="p-2 flex justify-between items-center text-xs">
                 <div>
                   <p className="font-medium text-gray-900">{formatDateTime(sale.created_at)}</p>
                   <p className="text-gray-600">{sale.items?.length || 0} items</p>
+                  {sale.created_by_email && <p className="text-gray-500 text-xs">{sale.created_by_email}</p>}
                 </div>
                 <span className="font-bold">{formatCurrency(sale.total)}</span>
               </div>
@@ -414,15 +495,62 @@ export function ShiftManagementPage() {
 }
 
 // Helper function to calculate time elapsed
-function calculateTimeElapsed(startTime: Date): string {
+function calculateTimeElapsed(startTime: Date | string): string {
+  // If startTime is a string, parse it as UTC
+  let startDate: Date;
+  if (typeof startTime === 'string') {
+    // Check if string already has timezone info (Z or ±HH:MM at the end)
+    const hasTimezone = startTime.includes('Z') || /[+-]\d{2}:\d{2}$/.test(startTime);
+    
+    if (hasTimezone) {
+      // Has timezone info - parse as-is
+      startDate = new Date(startTime);
+    } else {
+      // No timezone info - assume it's UTC and add Z
+      startDate = new Date(startTime + 'Z');
+    }
+  } else {
+    startDate = startTime;
+  }
+
   const now = new Date();
-  const diff = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+  console.log('📊 Time calculation:', {
+    now: now.toISOString(),
+    startTime: startTime,
+    startDate: startDate.toISOString(),
+    nowMs: now.getTime(),
+    startTimeMs: startDate.getTime(),
+  });
+  
+  const diff = Math.floor((now.getTime() - startDate.getTime()) / 1000);
+  console.log('⏱️ Diff in seconds:', diff);
 
   const hours = Math.floor(diff / 3600);
   const minutes = Math.floor((diff % 3600) / 60);
+  const seconds = diff % 60;
 
   if (hours > 0) {
-    return `${hours}h ${minutes}m`;
+    return `${hours}h ${minutes}m ${seconds}s`;
   }
-  return `${minutes}m`;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+// Helper to get proper Date object handling UTC timestamps
+function getProperDate(dateStr: string | Date): Date {
+  if (typeof dateStr === 'string') {
+    // Check if string already has timezone info (Z or ±HH:MM at the end)
+    const hasTimezone = dateStr.includes('Z') || /[+-]\d{2}:\d{2}$/.test(dateStr);
+    
+    if (hasTimezone) {
+      // Has timezone info - parse as-is
+      return new Date(dateStr);
+    } else {
+      // No timezone info - assume it's UTC and add Z
+      return new Date(dateStr + 'Z');
+    }
+  }
+  return dateStr;
 }

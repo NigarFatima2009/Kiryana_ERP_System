@@ -9,6 +9,8 @@ import {
   getDashboardStats, getSalesChartData, getTopSellingProducts,
   getSalesByPaymentMethod, getSalesByCategory, getStockByCategory,
   compareSalesTrend, getPerformanceMetrics, getCustomerMetrics, getInventoryTurnoverMetrics,
+  getExpiringItems, getDashboardStatsByCashier, getPerformanceMetricsByCashier,
+  getSalesByPaymentMethodByCashier, getSalesByCategoryByCashier, compareSalesTrendByCashier,
 } from '../services/dashboard';
 import { useAuth } from '../lib/auth';
 import { formatCurrency } from '../utils/helpers';
@@ -52,38 +54,74 @@ export function DashboardPage() {
   const { data: stats, isLoading } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => getDashboardStats(),
-    refetchInterval: 10000,
+    staleTime: 60_000, // 1 minute - dashboard aggregations are expensive
+    refetchInterval: 120_000, // Only refetch every 2 minutes, not 10 seconds
   });
 
-  const { data: chartData } = useQuery({ queryKey: ['sales-chart'], queryFn: () => getSalesChartData(14) });
-  const { data: topProducts } = useQuery({ queryKey: ['top-products'], queryFn: () => getTopSellingProducts(5) });
-  const { data: paymentMethods } = useQuery({ queryKey: ['payment-methods'], queryFn: () => getSalesByPaymentMethod() });
-  const { data: categorySales } = useQuery({ queryKey: ['category-sales'], queryFn: () => getSalesByCategory() });
-  const { data: stockByCategory } = useQuery({ queryKey: ['stock-category'], queryFn: () => getStockByCategory() });
+  const { data: chartData } = useQuery({ 
+    queryKey: ['sales-chart'], 
+    queryFn: () => getSalesChartData(14),
+    staleTime: 60_000,
+  });
+  
+  const { data: topProducts } = useQuery({ 
+    queryKey: ['top-products'], 
+    queryFn: () => getTopSellingProducts(5),
+    staleTime: 60_000,
+  });
+  
+  const { data: paymentMethods } = useQuery({ 
+    queryKey: ['payment-methods'], 
+    queryFn: () => getSalesByPaymentMethod(),
+    staleTime: 60_000,
+  });
+  
+  const { data: categorySales } = useQuery({ 
+    queryKey: ['category-sales'], 
+    queryFn: () => getSalesByCategory(),
+    staleTime: 60_000,
+  });
+  
+  const { data: stockByCategory } = useQuery({ 
+    queryKey: ['stock-category'], 
+    queryFn: () => getStockByCategory(),
+    staleTime: 60_000,
+  });
   
   // Trend data
   const { data: trendComparison } = useQuery({
     queryKey: ['trend-comparison', trendPeriod],
     queryFn: () => compareSalesTrend(trendPeriod),
-    refetchInterval: 30000,
+    staleTime: 60_000,
+    refetchInterval: 180_000, // Increased from 30s to 3 minutes
   });
 
   const { data: performanceMetrics } = useQuery({
     queryKey: ['performance-metrics'],
     queryFn: () => getPerformanceMetrics(30),
-    refetchInterval: 60000,
+    staleTime: 60_000,
+    refetchInterval: 180_000, // Increased from 60s to 3 minutes
   });
 
   const { data: customerMetrics } = useQuery({
     queryKey: ['customer-metrics'],
     queryFn: () => getCustomerMetrics(),
-    refetchInterval: 60000,
+    staleTime: 60_000,
+    refetchInterval: 180_000, // Increased from 60s to 3 minutes
   });
 
   const { data: inventoryMetrics } = useQuery({
     queryKey: ['inventory-metrics'],
     queryFn: () => getInventoryTurnoverMetrics(),
-    refetchInterval: 60000,
+    staleTime: 60_000,
+    refetchInterval: 180_000, // Increased from 60s to 3 minutes
+  });
+
+  const { data: expiringItems } = useQuery({
+    queryKey: ['expiring-items'],
+    queryFn: () => getExpiringItems(7),
+    staleTime: 60_000,
+    refetchInterval: 300_000, // Increased from 30s to 5 minutes - expiring items don't change that often
   });
 
   if (isLoading) {
@@ -103,6 +141,37 @@ export function DashboardPage() {
 
   // CASHIER: Only show sales-related cards
   if (profile?.role === 'CASHIER') {
+    // Use cashier-specific queries
+    const { data: cashierStats } = useQuery({
+      queryKey: ['dashboard-stats-cashier', profile.id],
+      queryFn: () => getDashboardStatsByCashier(profile.id),
+      refetchInterval: 10000,
+    });
+
+    const { data: cashierTrend } = useQuery({
+      queryKey: ['trend-comparison-cashier', trendPeriod, profile.id],
+      queryFn: () => compareSalesTrendByCashier(profile.id, trendPeriod),
+      refetchInterval: 30000,
+    });
+
+    const { data: cashierPerformance } = useQuery({
+      queryKey: ['performance-metrics-cashier', profile.id],
+      queryFn: () => getPerformanceMetricsByCashier(profile.id, 30),
+      refetchInterval: 60000,
+    });
+
+    const { data: cashierPaymentMethods } = useQuery({
+      queryKey: ['payment-methods-cashier', profile.id],
+      queryFn: () => getSalesByPaymentMethodByCashier(profile.id),
+      refetchInterval: 30000,
+    });
+
+    const { data: cashierCategorySales } = useQuery({
+      queryKey: ['category-sales-cashier', profile.id],
+      queryFn: () => getSalesByCategoryByCashier(profile.id),
+      refetchInterval: 30000,
+    });
+
     return (
       <div className="space-y-6 max-w-7xl">
         <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
@@ -145,24 +214,24 @@ export function DashboardPage() {
         <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
           <StatCard
             title="Total Sales"
-            value={formatCurrency(trendComparison?.current?.sales || 0)}
+            value={formatCurrency(cashierTrend?.current?.sales || 0)}
             onClick={() => navigate('/sales')}
-            trend={getTrendIndicator(trendComparison?.salesChangePercent || 0)}
-            trendPercent={trendComparison?.salesChangePercent}
+            trend={getTrendIndicator(cashierTrend?.salesChangePercent || 0)}
+            trendPercent={cashierTrend?.salesChangePercent}
           />
           <StatCard
             title="Total Profit"
-            value={formatCurrency(trendComparison?.current?.profit || 0)}
-            trend={getTrendIndicator(trendComparison?.profitChangePercent || 0)}
-            trendPercent={trendComparison?.profitChangePercent}
+            value={formatCurrency(cashierTrend?.current?.profit || 0)}
+            trend={getTrendIndicator(cashierTrend?.profitChangePercent || 0)}
+            trendPercent={cashierTrend?.profitChangePercent}
           />
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
-          <StatCard title="Transactions" value={String(trendComparison?.current?.transactions || 0)} />
+          <StatCard title="Transactions" value={String(cashierTrend?.current?.transactions || 0)} />
           <StatCard
             title="Avg Transaction"
-            value={formatCurrency(trendComparison?.current?.avgTransactionValue || 0)}
+            value={formatCurrency(cashierTrend?.current?.avgTransactionValue || 0)}
           />
         </div>
 
@@ -170,9 +239,9 @@ export function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Sales Performance Metrics */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Sales Performance (30 Days)</h3>
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales Performance (30 Days)</h3>
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={performanceMetrics || []}>
+              <LineChart data={cashierPerformance || []}>
                 <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} tickFormatter={(d) => new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric' })} />
                 <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} />
                 <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
@@ -185,7 +254,7 @@ export function DashboardPage() {
 
           {/* Payment Methods */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Payment Methods</h3>
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Payment Methods</h3>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
                 <defs>
@@ -196,14 +265,14 @@ export function DashboardPage() {
                   ))}
                 </defs>
                 <Pie
-                  data={(paymentMethods || []).map((p) => ({
+                  data={(cashierPaymentMethods || []).map((p) => ({
                     ...p,
                     method: p.method.replace('CUSTOMER_CREDIT', 'Khata').replace('BANK_TRANSFER', 'Bank').replace('EASYPAISA', 'Easypaisa').replace('JAZZCASH', 'JazzCash'),
                   }))}
                   cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
                   dataKey="amount" nameKey="method" strokeWidth={2}
                 >
-                  {(paymentMethods || []).map((_, i) => <Cell key={i} fill={`url(#pieHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+                  {(cashierPaymentMethods || []).map((_, i) => <Cell key={i} fill={`url(#pieHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
                 </Pie>
                 <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
                 <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
@@ -213,7 +282,7 @@ export function DashboardPage() {
 
           {/* Category Sales */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Sales by Category</h3>
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales by Category</h3>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
                 <defs>
@@ -224,10 +293,10 @@ export function DashboardPage() {
                   ))}
                 </defs>
                 <Pie
-                  data={categorySales || []} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
+                  data={cashierCategorySales || []} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
                   dataKey="value" nameKey="name" strokeWidth={2}
                 >
-                  {(categorySales || []).map((_, i) => <Cell key={i} fill={`url(#catHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+                  {(cashierCategorySales || []).map((_, i) => <Cell key={i} fill={`url(#catHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
                 </Pie>
                 <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
                 <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
@@ -360,21 +429,25 @@ export function DashboardPage() {
           </div>
 
           <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Period Comparison</h3>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Transactions:</span>
-                <span className="font-semibold">{trendComparison?.current.transactions} vs {trendComparison?.previous.transactions}</span>
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Expiring Items (7 Days)</h3>
+            {expiringItems && expiringItems.length > 0 ? (
+              <div className="space-y-2 text-sm">
+                {expiringItems.slice(0, 5).map((item: any) => (
+                  <div key={item.id} className="flex justify-between items-start pb-2 border-b border-gray-100 last:border-0">
+                    <div>
+                      <p className="font-medium text-slate-900">{item.productName}</p>
+                      <p className="text-xs text-gray-500">{item.quantity} units</p>
+                    </div>
+                    <span className={`text-xs font-semibold px-2 py-1 rounded ${item.daysUntilExpiry <= 2 ? 'bg-red-100 text-red-700' : item.daysUntilExpiry <= 4 ? 'bg-yellow-100 text-yellow-700' : 'bg-orange-100 text-orange-700'}`}>
+                      {item.daysUntilExpiry} d
+                    </span>
+                  </div>
+                ))}
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Avg Transaction:</span>
-                <span className="font-semibold">{formatCurrency(trendComparison?.current.avgTransactionValue || 0)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Profit Margin:</span>
-                <span className="font-semibold">{((trendComparison?.current.profit || 0) / (trendComparison?.current.sales || 1) * 100).toFixed(1)}%</span>
-              </div>
-            </div>
+            ) : (
+              <p className="text-sm text-gray-500">No items expiring soon</p>
+            )}
+            <button onClick={() => navigate('/batches')} className="mt-3 text-xs text-blue-600 hover:text-blue-700 font-medium">View all →</button>
           </div>
         </div>
       )}

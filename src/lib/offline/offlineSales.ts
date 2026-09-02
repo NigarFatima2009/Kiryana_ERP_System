@@ -7,6 +7,12 @@ import { decrementLocalInventory } from './cache';
 import { updateSyncStats } from './connectivity';
 import type { OfflineSale, OfflineSaleItem, OfflineSaleStatus, OfflineInventoryMovement } from './types';
 
+export const OFFLINE_SALES_CHANGED_EVENT = 'offline-sales-changed';
+
+function notifyOfflineSalesChanged(): void {
+  window.dispatchEvent(new Event(OFFLINE_SALES_CHANGED_EVENT));
+}
+
 function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
@@ -105,6 +111,7 @@ export async function createOfflineSale(params: {
   // Update pending operation count to trigger auto-sync when connection returns
   const stats = await getOfflineSalesStats();
   updateSyncStats(stats.pending, stats.synced, stats.failed);
+  notifyOfflineSalesChanged();
   
   return sale;
 }
@@ -160,6 +167,7 @@ export async function updateOfflineSaleStatus(
 ): Promise<void> {
   const db = getOfflineDB();
   await db.offlineSales.update(saleId, { status, ...updates });
+  notifyOfflineSalesChanged();
 }
 
 export async function markAsSyncing(saleId: string): Promise<void> {
@@ -170,6 +178,7 @@ export async function markAsSyncing(saleId: string): Promise<void> {
     last_sync_attempt_at: Date.now(),
     sync_attempt_count: (sale?.sync_attempt_count ?? 0) + 1,
   });
+  notifyOfflineSalesChanged();
 }
 
 export async function markAsSynced(
@@ -184,6 +193,7 @@ export async function markAsSynced(
     server_invoice_number: serverInvoiceNumber,
     synced_at: Date.now(),
   });
+  notifyOfflineSalesChanged();
 }
 
 export async function markAsSyncFailed(saleId: string, errorMessage: string): Promise<void> {
@@ -195,6 +205,7 @@ export async function markAsSyncFailed(saleId: string, errorMessage: string): Pr
     last_sync_attempt_at: Date.now(),
     sync_attempt_count: (sale?.sync_attempt_count ?? 0) + 1,
   });
+  notifyOfflineSalesChanged();
 }
 
 export async function markAsConflict(saleId: string, conflictReason: string): Promise<void> {
@@ -203,6 +214,7 @@ export async function markAsConflict(saleId: string, conflictReason: string): Pr
     status: 'conflict',
     last_sync_error: conflictReason,
   });
+  notifyOfflineSalesChanged();
 }
 
 export async function markAsDuplicate(
@@ -217,6 +229,7 @@ export async function markAsDuplicate(
     server_invoice_number: serverInvoiceNumber,
     synced_at: Date.now(),
   });
+  notifyOfflineSalesChanged();
 }
 
 export async function deleteOfflineSale(saleId: string): Promise<void> {
@@ -225,6 +238,7 @@ export async function deleteOfflineSale(saleId: string): Promise<void> {
     await db.offlineSaleItems.where('offline_sale_id').equals(saleId).delete();
     await db.offlineSales.delete(saleId);
   });
+  notifyOfflineSalesChanged();
 }
 
 // ==================== DIAGNOSTICS ====================

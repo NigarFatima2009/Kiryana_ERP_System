@@ -24,6 +24,16 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       profit += Number(sale.total) - Number(sale.cogs);
     });
 
+    // Returns reduce revenue on the day they are processed. The original sale
+    // remains intact for audit, while the dashboard reports the net amount.
+    const { data: todayReturns } = await supabase
+      .from('sales_returns')
+      .select('total')
+      .gte('created_at', todayStart)
+      .lte('created_at', todayEnd);
+    const returnedSales = (todayReturns || []).reduce((sum: number, saleReturn: any) => sum + Number(saleReturn.total), 0);
+    totalSales = Math.max(0, totalSales - returnedSales);
+
     // Include offline pending sales in today's total
     try {
       const db = getOfflineDB();
@@ -603,4 +613,293 @@ export async function getInventoryTurnoverMetrics(): Promise<{
     turnoverRatio,
     daysInventoryOutstanding,
   };
+}
+
+
+// Get items expiring within N days
+export async function getExpiringItems(daysUntilExpiry: number = 7) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const expiryDate = new Date(Date.now() + daysUntilExpiry * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const { data: batches, error } = await supabase
+      .from('inventory_batches')
+      .select('id, product_id, batch_number, expiry_date, remaining_quantity')
+      .lte('expiry_date', expiryDate)
+      .gt('expiry_date', today)
+      .gt('remaining_quantity', 0)
+      .order('expiry_date', { ascending: true })
+      .limit(10);
+
+    if (error) throw error;
+
+    // Fetch product details
+    const productIds = [...new Set((batches || []).map(b => b.product_id))];
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name, sku')
+      .in('id', productIds);
+
+    const productMap = new Map((products || []).map(p => [p.id, p]));
+
+    return (batches || []).map(batch => ({
+      id: batch.id,
+      productName: productMap.get(batch.product_id)?.name || 'Unknown',
+      sku: productMap.get(batch.product_id)?.sku || '',
+      quantity: batch.remaining_quantity,
+      expiryDate: batch.expiry_date,
+      daysUntilExpiry: Math.ceil((new Date(batch.expiry_date).getTime() - new Date(today).getTime()) / (1000 * 60 * 60 * 24)),
+    }));
+  } catch (error) {
+    console.error('Error fetching expiring items:', error);
+    return [];
+  }
+}
+
+
+// Get sales stats filtered by cashier for their own dashboard
+export async function getDashboardStatsByCashier(cashierId: string): Promise<DashboardStats> {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const todayStart = `${today}T00:00:00`;
+    const todayEnd = `${today}T23:59:59`;
+
+    // Today's sales for this cashier only
+    const { data: todaySalesData } = await supabase
+      .from('sales')
+      .select('total, cogs')
+      .eq('status', 'COMPLETED')
+      .eq('created_by', cashierId)
+      .gte('sale_date', todayStart)
+      .lte('sale_date', todayEnd);
+
+    let totalSales = 0;
+    let profit = 0;
+    (todaySalesData || []).forEach((sale: any) => {
+      totalSales += Number(sale.total);
+      profit += Number(sale.total) - Number(sale.cogs);
+    });
+
+    // Today's credit sales for this cashier
+    const { data: creditData } = await supabase
+      .from('sale_payments')
+      .select('amount, sales(created_by)')
+      .eq('payment_method', 'CUSTOMER_CREDIT')
+      .eq('sales.created_by', cashierId)
+      .gte('created_at', todayStart)
+      .lte('created_at', todayEnd);
+
+    const totalCredit = (creditData || []).reduce((sum: number, p: any) => sum + Number(p.amount), 0);
+
+    const stats = {
+      todaySales: totalSales,
+      todayPurchases: 0, // Cashiers don't handle purchases
+      todayExpenses: 0, // Cashiers don't record expenses
+      todayProfit: profit,
+      cashInHand: 0, // Will be calculated from shift
+      creditSales: totalCredit,
+      customerReceivables: 0, // Not relevant for cashier view
+      supplierPayables: 0, // Not relevant for cashier view
+      inventoryValue: 0, // Not relevant for cashier view
+      totalProducts: 0,
+      lowStockProducts: 0,
+      expiringProducts: 0,
+    };
+    return stats;
+  } catch (error) {
+    console.error('Error fetching cashier dashboard stats:', error);
+    return {
+      todaySales: 0,
+      todayPurchases: 0,
+      todayExpenses: 0,
+      todayProfit: 0,
+      cashInHand: 0,
+      creditSales: 0,
+      customerReceivables: 0,
+      supplierPayables: 0,
+      inventoryValue: 0,
+      totalProducts: 0,
+      lowStockProducts: 0,
+      expiringProducts: 0,
+    };
+  }
+}
+
+// Get performance metrics filtered by cashier
+export async function getPerformanceMetricsByCashier(cashierId: string, days: number = 30) {
+  try {
+    const data = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const start = `${date}T00:00:00`;
+      const end = `${date}T23:59:59`;
+
+      const { data: sales } = await supabase
+        .from('sales')
+        .select('total, cogs')
+        .eq('created_by', cashierId)
+        .eq('status', 'COMPLETED')
+        .gte('sale_date', start)
+        .lte('sale_date', end);
+
+      let dayTotal = 0;
+      let dayProfit = 0;
+      (sales || []).forEach((s: any) => {
+        dayTotal += Number(s.total);
+        dayProfit += Number(s.total) - Number(s.cogs);
+      });
+
+      data.push({
+        date,
+        sales: dayTotal,
+        profit: dayProfit,
+      });
+    }
+    return data;
+  } catch (error) {
+    console.error('Error fetching cashier performance metrics:', error);
+    return [];
+  }
+}
+
+// Get payment methods filtered by cashier
+export async function getSalesByPaymentMethodByCashier(cashierId: string) {
+  try {
+    const { data, error } = await supabase
+      .from('sale_payments')
+      .select('payment_method, amount, sales(created_by, status)')
+      .eq('sales.created_by', cashierId)
+      .eq('sales.status', 'COMPLETED');
+
+    if (error) throw error;
+
+    const methods: Record<string, number> = {};
+    (data || []).forEach((p: any) => {
+      if (!methods[p.payment_method]) methods[p.payment_method] = 0;
+      methods[p.payment_method] += Number(p.amount);
+    });
+
+    return Object.entries(methods).map(([method, amount]) => ({
+      method,
+      amount,
+    }));
+  } catch (error) {
+    console.error('Error fetching cashier payment methods:', error);
+    return [];
+  }
+}
+
+// Get sales by category filtered by cashier
+export async function getSalesByCategoryByCashier(cashierId: string) {
+  try {
+    const { data, error } = await supabase
+      .from('sale_items')
+      .select('products(category_id, categories(name)), line_total, sales(created_by, status)')
+      .eq('sales.created_by', cashierId)
+      .eq('sales.status', 'COMPLETED');
+
+    if (error) throw error;
+
+    const categories: Record<string, number> = {};
+    (data || []).forEach((item: any) => {
+      // Get category name from the nested join, fallback to 'Uncategorized'
+      const categoryName = item.products?.categories?.name || 'Uncategorized';
+      if (!categories[categoryName]) categories[categoryName] = 0;
+      categories[categoryName] += Number(item.line_total);
+    });
+
+    return Object.entries(categories).map(([name, value]) => ({
+      name,
+      value,
+    }));
+  } catch (error) {
+    console.error('Error fetching cashier sales by category:', error);
+    return [];
+  }
+}
+
+// Get sales trend comparison for cashier
+export async function compareSalesTrendByCashier(
+  cashierId: string,
+  period: 'day' | 'week' | 'month'
+) {
+  try {
+    const now = new Date();
+    let currentStart: Date, currentEnd: Date, previousStart: Date, previousEnd: Date;
+
+    if (period === 'day') {
+      currentStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      currentEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      previousStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      previousEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (period === 'week') {
+      const weekStart = new Date(now);
+      weekStart.setDate(now.getDate() - now.getDay());
+      currentStart = new Date(weekStart);
+      currentEnd = new Date(weekStart);
+      currentEnd.setDate(weekStart.getDate() + 7);
+      previousStart = new Date(weekStart);
+      previousStart.setDate(weekStart.getDate() - 7);
+      previousEnd = new Date(weekStart);
+    } else {
+      currentStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      currentEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      previousStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      previousEnd = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    // Fetch current period sales for this cashier
+    const { data: currentSales } = await supabase
+      .from('sales')
+      .select('total, cogs')
+      .eq('created_by', cashierId)
+      .eq('status', 'COMPLETED')
+      .gte('sale_date', currentStart.toISOString())
+      .lt('sale_date', currentEnd.toISOString());
+
+    const currentSalesTotal = (currentSales || []).reduce((sum, s: any) => sum + Number(s.total), 0);
+    const currentProfit = (currentSales || []).reduce((sum, s: any) => sum + Number(s.total) - Number(s.cogs), 0);
+    const currentTransactions = currentSales?.length || 0;
+
+    // Fetch previous period sales for this cashier
+    const { data: previousSales } = await supabase
+      .from('sales')
+      .select('total, cogs')
+      .eq('created_by', cashierId)
+      .eq('status', 'COMPLETED')
+      .gte('sale_date', previousStart.toISOString())
+      .lt('sale_date', previousEnd.toISOString());
+
+    const previousSalesTotal = (previousSales || []).reduce((sum, s: any) => sum + Number(s.total), 0);
+    const previousProfit = (previousSales || []).reduce((sum, s: any) => sum + Number(s.total) - Number(s.cogs), 0);
+    const previousTransactions = previousSales?.length || 0;
+
+    const salesChangePercent = previousSalesTotal > 0 ? ((currentSalesTotal - previousSalesTotal) / previousSalesTotal) * 100 : 0;
+    const profitChangePercent = previousProfit > 0 ? ((currentProfit - previousProfit) / previousProfit) * 100 : 0;
+
+    return {
+      current: {
+        sales: currentSalesTotal,
+        profit: currentProfit,
+        transactions: currentTransactions,
+        avgTransactionValue: currentTransactions > 0 ? currentSalesTotal / currentTransactions : 0,
+      },
+      previous: {
+        sales: previousSalesTotal,
+        profit: previousProfit,
+        transactions: previousTransactions,
+        avgTransactionValue: previousTransactions > 0 ? previousSalesTotal / previousTransactions : 0,
+      },
+      salesChangePercent,
+      profitChangePercent,
+    };
+  } catch (error) {
+    console.error('Error comparing cashier sales trend:', error);
+    return {
+      current: { sales: 0, profit: 0, transactions: 0, avgTransactionValue: 0 },
+      previous: { sales: 0, profit: 0, transactions: 0, avgTransactionValue: 0 },
+      salesChangePercent: 0,
+      profitChangePercent: 0,
+    };
+  }
 }

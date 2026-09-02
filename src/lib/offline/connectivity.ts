@@ -22,7 +22,11 @@ interface ConnectivityState {
 }
 
 let state: ConnectivityState = {
-  status: navigator.onLine ? 'ONLINE' : 'OFFLINE',
+  // Do not assume that navigator.onLine means the POS backend is reachable.
+  // While the first check runs, checkout stores the sale locally. This keeps
+  // the payment screen responsive and the sale will be synced moments later
+  // if the backend is available.
+  status: navigator.onLine ? 'CONNECTIVITY_CHECKING' : 'OFFLINE',
   lastOnlineTime: Date.now(),
   lastSyncTime: null,
   lastSyncError: null,
@@ -44,7 +48,7 @@ async function performHealthCheck(): Promise<boolean> {
   
   try {
     const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+    timeoutId = setTimeout(() => controller.abort(), 1500); // Keep reconnect detection responsive
 
     // Check connectivity using navigator.onLine first
     if (!navigator.onLine) {
@@ -262,6 +266,16 @@ export function initializeConnectivity(): void {
     console.log('[Connectivity] Browser "offline" event fired');
     handleOffline();
   });
+
+  // Verify the initial browser state immediately. Until this completes the
+  // status remains CONNECTIVITY_CHECKING, which the POS treats as local-first.
+  if (navigator.onLine) {
+    void handleOnline().catch(error => {
+      console.error('[Connectivity] Error checking initial connection:', error);
+    });
+  } else {
+    handleOffline();
+  }
 
   // Periodic connectivity check every 10 seconds (more aggressive)
   setInterval(async () => {

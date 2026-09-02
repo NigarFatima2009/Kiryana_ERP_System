@@ -5,11 +5,12 @@
  */
 
 import { useEffect, useState, useRef } from 'react';
-import { Database, ChevronDown, ChevronRight, Trash2, X } from 'lucide-react';
+import { Database, ChevronDown, ChevronRight, Trash2, X, RefreshCw } from 'lucide-react';
 import { getOfflineDB } from '../../lib/offline/db';
-import type { OfflineProduct, OfflineInventory, OfflineCustomer, OfflineSale } from '../../lib/offline/types';
+import { OFFLINE_SALES_CHANGED_EVENT } from '../../lib/offline/offlineSales';
+import type { OfflineProduct, OfflineInventory, OfflineCustomer, OfflineSale, OfflineShift } from '../../lib/offline/types';
 
-type DataSection = 'products' | 'inventory' | 'customers' | 'sales' | 'none';
+type DataSection = 'products' | 'inventory' | 'customers' | 'sales' | 'shifts' | 'none';
 
 export function OfflineDataViewer() {
   const [isOpen, setIsOpen] = useState(false);
@@ -30,33 +31,62 @@ export function OfflineDataViewer() {
   const [inventory, setInventory] = useState<OfflineInventory[]>([]);
   const [customers, setCustomers] = useState<OfflineCustomer[]>([]);
   const [sales, setSales] = useState<OfflineSale[]>([]);
+  const [shifts, setShifts] = useState<OfflineShift[]>([]);
   const [loading, setLoading] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
     try {
       const db = getOfflineDB();
-      const [prods, invs, custs, salesData] = await Promise.all([
+      const [prods, invs, custs, salesData, shiftsData] = await Promise.all([
         db.products.toArray(),
         db.inventory.toArray(),
         db.customers.toArray(),
         db.offlineSales.toArray(),
+        db.offlineShifts.toArray(),
       ]);
       setProducts(prods);
       setInventory(invs);
       setCustomers(custs);
       setSales(salesData);
+      setShifts(shiftsData);
     } catch (error) {
       console.error('[OfflineDataViewer] Failed to load data:', error);
     }
     setLoading(false);
   };
 
+  // Load data when panel opens
   useEffect(() => {
     if (isOpen && expanded === 'none') {
       loadData();
       setExpanded('products');
     }
+  }, [isOpen]);
+
+  // Auto-refresh data when coming back online or every 5 seconds while open
+  useEffect(() => {
+    if (!isOpen) return;
+    const id = setInterval(() => {
+      loadData();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isOpen]);
+
+  // Also refresh when network status changes
+  useEffect(() => {
+    const handleOnline = () => {
+      if (isOpen) loadData();
+    };
+    const handleOfflineSalesChanged = () => {
+      if (isOpen) loadData();
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, handleOfflineSalesChanged);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, handleOfflineSalesChanged);
+    };
   }, [isOpen]);
 
   // ---- Smooth drag using refs + direct DOM manipulation ----
@@ -121,6 +151,7 @@ export function OfflineDataViewer() {
         setInventory([]);
         setCustomers([]);
         setSales([]);
+        setShifts([]);
         alert('Cache cleared!');
       } catch (error) {
         console.error('Failed to clear cache:', error);
@@ -174,12 +205,21 @@ export function OfflineDataViewer() {
                 <Database className="h-5 w-5" />
                 <span className="font-semibold">Offline Data Store</span>
               </div>
-              <button
-                onClick={() => setIsOpen(false)}
-                className="p-1 hover:bg-blue-700 rounded transition"
-              >
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={loadData}
+                  className="p-1 hover:bg-blue-700 rounded transition"
+                  title="Refresh data"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className="p-1 hover:bg-blue-700 rounded transition"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
             {/* Content */}
@@ -196,20 +236,15 @@ export function OfflineDataViewer() {
                 {products.length === 0 ? (
                   <div className="text-sm text-gray-500">No products cached</div>
                 ) : (
-                  <div className="space-y-2">
-                    {products.slice(0, 5).map(prod => (
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {products.map(prod => (
                       <div key={prod.id} className="text-sm p-2 bg-gray-50 rounded">
                         <div className="font-medium">{prod.name}</div>
                         <div className="text-xs text-gray-600">
-                          SKU: {prod.sku} | Price: Rs {prod.selling_price}
+                          SKU: {prod.sku} | Rs {prod.selling_price}
                         </div>
                       </div>
                     ))}
-                    {products.length > 5 && (
-                      <div className="text-xs text-gray-500 italic">
-                        +{products.length - 5} more...
-                      </div>
-                    )}
                   </div>
                 )}
               </Section>
@@ -224,20 +259,19 @@ export function OfflineDataViewer() {
                 {inventory.length === 0 ? (
                   <div className="text-sm text-gray-500">No inventory cached</div>
                 ) : (
-                  <div className="space-y-2">
-                    {inventory.slice(0, 5).map(inv => (
-                      <div key={inv.product_id} className="text-sm p-2 bg-gray-50 rounded">
-                        <div className="font-medium">Product: {inv.product_id.slice(0, 8)}...</div>
-                        <div className="text-xs text-gray-600">
-                          Qty: {inv.quantity} | Avg Cost: Rs {inv.average_cost}
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {inventory.map(inv => {
+                      const prod = products.find(p => p.id === inv.product_id);
+                      return (
+                        <div key={inv.product_id} className="text-sm p-2 bg-gray-50 rounded">
+                          <div className="font-medium text-xs">{prod?.name || inv.product_id.slice(0, 8) + '...'}</div>
+                          <div className="text-xs text-gray-600">
+                            Qty: {inv.quantity} | Rs {inv.average_cost}
+                            {inv.synced_at && <span className="text-gray-400 ml-1">· {new Date(inv.synced_at).toLocaleTimeString()}</span>}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                    {inventory.length > 5 && (
-                      <div className="text-xs text-gray-500 italic">
-                        +{inventory.length - 5} more...
-                      </div>
-                    )}
+                      );
+                    })}
                   </div>
                 )}
               </Section>
@@ -252,20 +286,48 @@ export function OfflineDataViewer() {
                 {customers.length === 0 ? (
                   <div className="text-sm text-gray-500">No customers cached</div>
                 ) : (
-                  <div className="space-y-2">
-                    {customers.slice(0, 5).map(cust => (
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {customers.map(cust => (
                       <div key={cust.id} className="text-sm p-2 bg-gray-50 rounded">
                         <div className="font-medium">{cust.name}</div>
                         <div className="text-xs text-gray-600">
-                          Phone: {cust.phone || 'N/A'} | Credit: Rs {cust.credit_limit}
+                          {cust.phone || 'N/A'} | Rs {cust.credit_limit}
                         </div>
                       </div>
                     ))}
-                    {customers.length > 5 && (
-                      <div className="text-xs text-gray-500 italic">
-                        +{customers.length - 5} more...
+                  </div>
+                )}
+              </Section>
+
+              {/* Shifts Section */}
+              <Section
+                title="Offline Shifts"
+                count={shifts.length}
+                isOpen={expanded === 'shifts'}
+                onClick={() => setExpanded(expanded === 'shifts' ? 'none' : 'shifts')}
+              >
+                {shifts.length === 0 ? (
+                  <div className="text-sm text-gray-500">No offline shifts</div>
+                ) : (
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {shifts.map(shift => (
+                      <div key={shift.id} className={`text-sm p-2 rounded border-l-4 ${
+                        shift.status === 'OPEN' ? 'bg-amber-50 border-amber-400' : 'bg-green-50 border-green-400'
+                      }`}>
+                        <div className="font-medium flex justify-between">
+                          <span>Rs {shift.opening_cash} float</span>
+                          <span className={`text-xs px-2 py-1 rounded font-bold ${
+                            shift.synced ? 'bg-green-200 text-green-800' : 'bg-yellow-200 text-yellow-800'
+                          }`}>
+                            {shift.synced ? 'synced' : shift.status}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {new Date(shift.opened_at).toLocaleString()}
+                          {shift.closed_at && ` → ${new Date(shift.closed_at).toLocaleTimeString()}`}
+                        </div>
                       </div>
-                    )}
+                    ))}
                   </div>
                 )}
               </Section>
@@ -280,12 +342,14 @@ export function OfflineDataViewer() {
                 {sales.length === 0 ? (
                   <div className="text-sm text-gray-500">No sales</div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-h-80 overflow-y-auto">
                     {/* Show pending first, then synced */}
                     {sales.filter(s => s.status !== 'synced').length > 0 && (
                       <>
-                        <div className="text-xs font-bold text-yellow-700 px-2 py-1 bg-yellow-50 rounded">⏳ Pending Sync</div>
-                        {sales.filter(s => s.status !== 'synced').slice(0, 3).map(sale => (
+                        <div className="text-xs font-bold text-yellow-700 px-2 py-1 bg-yellow-50 rounded sticky top-0">
+                          ⏳ Pending Sync ({sales.filter(s => s.status !== 'synced').length})
+                        </div>
+                        {sales.filter(s => s.status !== 'synced').map(sale => (
                           <div key={sale.id} className="text-sm p-2 bg-yellow-50 rounded border-l-4 border-yellow-400">
                             <div className="font-medium flex justify-between">
                               <span>{sale.invoice_number}</span>
@@ -302,23 +366,25 @@ export function OfflineDataViewer() {
                               </span>
                             </div>
                             <div className="text-xs text-gray-600 mt-1">
-                              Total: Rs {sale.total} | Customer: {sale.customer_name || 'Walk-in'}
+                              Rs {sale.total} | {sale.customer_name || 'Walk-in'}
+                              {sale.payment_methods && sale.payment_methods.length > 0 && (
+                                <span className="ml-1">
+                                  · {sale.payment_methods.map((p: any) => p.method === 'CUSTOMER_CREDIT' ? 'Khata' : p.method).join(', ')}
+                                </span>
+                              )}
                             </div>
                           </div>
                         ))}
-                        {sales.filter(s => s.status !== 'synced').length > 3 && (
-                          <div className="text-xs text-yellow-600 italic px-2">
-                            +{sales.filter(s => s.status !== 'synced').length - 3} pending...
-                          </div>
-                        )}
                       </>
                     )}
 
                     {/* Show synced separately */}
                     {sales.filter(s => s.status === 'synced').length > 0 && (
                       <>
-                        <div className="text-xs font-bold text-green-700 px-2 py-1 bg-green-50 rounded">✓ Synced</div>
-                        {sales.filter(s => s.status === 'synced').slice(0, 2).map(sale => (
+                        <div className="text-xs font-bold text-green-700 px-2 py-1 bg-green-50 rounded sticky top-0">
+                          ✓ Synced ({sales.filter(s => s.status === 'synced').length})
+                        </div>
+                        {sales.filter(s => s.status === 'synced').map(sale => (
                           <div key={sale.id} className="text-sm p-2 bg-green-50 rounded border-l-4 border-green-400">
                             <div className="font-medium flex justify-between">
                               <span>{sale.invoice_number}</span>
@@ -327,15 +393,10 @@ export function OfflineDataViewer() {
                               </span>
                             </div>
                             <div className="text-xs text-gray-600 mt-1">
-                              Total: Rs {sale.total} | Customer: {sale.customer_name || 'Walk-in'}
+                              Rs {sale.total} | {sale.customer_name || 'Walk-in'}
                             </div>
                           </div>
                         ))}
-                        {sales.filter(s => s.status === 'synced').length > 2 && (
-                          <div className="text-xs text-green-600 italic px-2">
-                            +{sales.filter(s => s.status === 'synced').length - 2} synced...
-                          </div>
-                        )}
                       </>
                     )}
                   </div>

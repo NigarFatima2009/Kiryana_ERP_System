@@ -17,6 +17,7 @@ import type {
   SyncQueueItem,
   SyncConflict,
   OfflineInventoryMovement,
+  OfflineShift,
 } from './types';
 
 /**
@@ -39,6 +40,9 @@ export class ERPOfflineDB extends Dexie {
   offlineSales!: Table<OfflineSale>;
   offlineSaleItems!: Table<OfflineSaleItem>;
   offlineInventoryMovements!: Table<OfflineInventoryMovement>;
+
+  // Offline shifts
+  offlineShifts!: Table<OfflineShift>;
 
   // Sync infrastructure
   syncQueue!: Table<SyncQueueItem>;
@@ -84,6 +88,9 @@ export class ERPOfflineDB extends Dexie {
       // Indexed by: id (PK), product_id (for stock reports), reference_id (to link to offline_sale)
       // synced flag allows tracking which movements have been replicated
       offlineInventoryMovements: 'id, product_id, reference_id, synced, created_at',
+
+      // Offline shifts (created while disconnected)
+      offlineShifts: 'id, user_id, status, opened_at, synced_at',
 
       // ===================== SYNC INFRASTRUCTURE =====================
 

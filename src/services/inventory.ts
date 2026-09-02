@@ -139,10 +139,19 @@ export async function fetchStockMovements(params?: { product_id?: string; moveme
 
   const productMap = new Map((products || []).map((p) => [p.id, p]));
 
+  // Fetch profiles (cashier info) for created_by field
+  const profileIds = [...new Set(movementData.map((m) => m.created_by).filter(Boolean))];
+  const { data: profiles } = profileIds.length > 0
+    ? await supabase.from('profiles').select('id, full_name, email').in('id', profileIds)
+    : { data: [] };
+
+  const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
+
   const merged = movementData
     .map((m) => ({
       ...m,
       products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
+      profiles: m.created_by ? profileMap.get(m.created_by) || null : null,
     }));
 
   const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
