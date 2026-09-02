@@ -46,9 +46,192 @@ function StatCard({ title, value, onClick, trend, trendPercent }: { title: strin
 
 const tooltipStyle = { borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '13px' };
 
-export function DashboardPage() {
+const getTrendIndicator = (percent: number): 'up' | 'down' | 'neutral' => {
+  if (percent > 5) return 'up';
+  if (percent < -5) return 'down';
+  return 'neutral';
+};
+
+function CashierDashboard({ cashierId }: { cashierId: string }) {
   const navigate = useNavigate();
-  const { profile } = useAuth();
+  const [trendPeriod, setTrendPeriod] = useState<'day' | 'week' | 'month'>('day');
+
+  const { data: cashierStats, isLoading } = useQuery({
+    queryKey: ['dashboard-stats-cashier', cashierId],
+    queryFn: () => getDashboardStatsByCashier(cashierId),
+    refetchInterval: 10000,
+  });
+
+  const { data: cashierTrend } = useQuery({
+    queryKey: ['trend-comparison-cashier', trendPeriod, cashierId],
+    queryFn: () => compareSalesTrendByCashier(cashierId, trendPeriod),
+    refetchInterval: 30000,
+  });
+
+  const { data: cashierPerformance } = useQuery({
+    queryKey: ['performance-metrics-cashier', cashierId],
+    queryFn: () => getPerformanceMetricsByCashier(cashierId, 30),
+    refetchInterval: 60000,
+  });
+
+  const { data: cashierPaymentMethods } = useQuery({
+    queryKey: ['payment-methods-cashier', cashierId],
+    queryFn: () => getSalesByPaymentMethodByCashier(cashierId),
+    refetchInterval: 30000,
+  });
+
+  const { data: cashierCategorySales } = useQuery({
+    queryKey: ['category-sales-cashier', cashierId],
+    queryFn: () => getSalesByCategoryByCashier(cashierId),
+    refetchInterval: 30000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="animate-spin rounded-full h-6 w-6 border-2 border-gray-200 border-t-gray-600" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 max-w-7xl">
+      <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
+
+      {/* Trend Period Selector */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setTrendPeriod('day')}
+          className={`px-3 py-1 rounded text-sm font-medium ${
+            trendPeriod === 'day'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          Today
+        </button>
+        <button
+          onClick={() => setTrendPeriod('week')}
+          className={`px-3 py-1 rounded text-sm font-medium ${
+            trendPeriod === 'week'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          This Week
+        </button>
+        <button
+          onClick={() => setTrendPeriod('month')}
+          className={`px-3 py-1 rounded text-sm font-medium ${
+            trendPeriod === 'month'
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+        >
+          This Month
+        </button>
+      </div>
+
+      {/* Sales only for cashiers with trends */}
+      <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
+        <StatCard
+          title="Total Sales"
+          value={formatCurrency(cashierTrend?.current?.sales || 0)}
+          onClick={() => navigate('/sales')}
+          trend={getTrendIndicator(cashierTrend?.salesChangePercent || 0)}
+          trendPercent={cashierTrend?.salesChangePercent}
+        />
+        <StatCard
+          title="Total Profit"
+          value={formatCurrency(cashierTrend?.current?.profit || 0)}
+          trend={getTrendIndicator(cashierTrend?.profitChangePercent || 0)}
+          trendPercent={cashierTrend?.profitChangePercent}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
+        <StatCard title="Transactions" value={String(cashierTrend?.current?.transactions || 0)} />
+        <StatCard
+          title="Avg Transaction"
+          value={formatCurrency(cashierTrend?.current?.avgTransactionValue || 0)}
+        />
+      </div>
+
+      {/* Charts - Sales and Payment Methods only */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Sales Performance Metrics */}
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales Performance (30 Days)</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={cashierPerformance || []}>
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} tickFormatter={(d) => new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric' })} />
+              <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} />
+              <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+              <Legend />
+              <Line type="monotone" dataKey="sales" stroke="#475569" strokeWidth={2} dot={false} name="Daily Sales" />
+              <Line type="monotone" dataKey="profit" stroke="#15803d" strokeWidth={2} dot={false} name="Daily Profit" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Payment Methods */}
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Your Payment Methods</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <defs>
+                {COLORS.map((color, i) => (
+                  <pattern key={`pie-hatch-${i}`} id={`pieHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30})`}>
+                    <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
+                  </pattern>
+                ))}
+              </defs>
+              <Pie
+                data={(cashierPaymentMethods || []).map((p) => ({
+                  ...p,
+                  method: p.method.replace('CUSTOMER_CREDIT', 'Khata').replace('BANK_TRANSFER', 'Bank').replace('EASYPAISA', 'Easypaisa').replace('JAZZCASH', 'JazzCash'),
+                }))}
+                cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
+                dataKey="amount" nameKey="method" strokeWidth={2}
+              >
+                {(cashierPaymentMethods || []).map((_, i) => <Cell key={i} fill={`url(#pieHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+              </Pie>
+              <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+              <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Category Sales */}
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales by Category</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <defs>
+                {COLORS.map((color, i) => (
+                  <pattern key={`cat-hatch-${i}`} id={`catHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30 + 15})`}>
+                    <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
+                  </pattern>
+                ))}
+              </defs>
+              <Pie
+                data={cashierCategorySales || []} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
+                dataKey="value" nameKey="name" strokeWidth={2}
+              >
+                {(cashierCategorySales || []).map((_, i) => <Cell key={i} fill={`url(#catHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
+              </Pie>
+              <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
+              <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OwnerDashboard() {
+  const navigate = useNavigate();
   const [trendPeriod, setTrendPeriod] = useState<'day' | 'week' | 'month'>('day');
 
   const { data: stats, isLoading } = useQuery({
@@ -132,183 +315,6 @@ export function DashboardPage() {
     );
   }
 
-  // Get trend indicators
-  const getTrendIndicator = (percent: number): 'up' | 'down' | 'neutral' => {
-    if (percent > 5) return 'up';
-    if (percent < -5) return 'down';
-    return 'neutral';
-  };
-
-  // CASHIER: Only show sales-related cards
-  if (profile?.role === 'CASHIER') {
-    // Use cashier-specific queries
-    const { data: cashierStats } = useQuery({
-      queryKey: ['dashboard-stats-cashier', profile.id],
-      queryFn: () => getDashboardStatsByCashier(profile.id),
-      refetchInterval: 10000,
-    });
-
-    const { data: cashierTrend } = useQuery({
-      queryKey: ['trend-comparison-cashier', trendPeriod, profile.id],
-      queryFn: () => compareSalesTrendByCashier(profile.id, trendPeriod),
-      refetchInterval: 30000,
-    });
-
-    const { data: cashierPerformance } = useQuery({
-      queryKey: ['performance-metrics-cashier', profile.id],
-      queryFn: () => getPerformanceMetricsByCashier(profile.id, 30),
-      refetchInterval: 60000,
-    });
-
-    const { data: cashierPaymentMethods } = useQuery({
-      queryKey: ['payment-methods-cashier', profile.id],
-      queryFn: () => getSalesByPaymentMethodByCashier(profile.id),
-      refetchInterval: 30000,
-    });
-
-    const { data: cashierCategorySales } = useQuery({
-      queryKey: ['category-sales-cashier', profile.id],
-      queryFn: () => getSalesByCategoryByCashier(profile.id),
-      refetchInterval: 30000,
-    });
-
-    return (
-      <div className="space-y-6 max-w-7xl">
-        <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
-
-        {/* Trend Period Selector */}
-        <div className="flex gap-2">
-          <button
-            onClick={() => setTrendPeriod('day')}
-            className={`px-3 py-1 rounded text-sm font-medium ${
-              trendPeriod === 'day'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Today
-          </button>
-          <button
-            onClick={() => setTrendPeriod('week')}
-            className={`px-3 py-1 rounded text-sm font-medium ${
-              trendPeriod === 'week'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            This Week
-          </button>
-          <button
-            onClick={() => setTrendPeriod('month')}
-            className={`px-3 py-1 rounded text-sm font-medium ${
-              trendPeriod === 'month'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            This Month
-          </button>
-        </div>
-
-        {/* Sales only for cashiers with trends */}
-        <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
-          <StatCard
-            title="Total Sales"
-            value={formatCurrency(cashierTrend?.current?.sales || 0)}
-            onClick={() => navigate('/sales')}
-            trend={getTrendIndicator(cashierTrend?.salesChangePercent || 0)}
-            trendPercent={cashierTrend?.salesChangePercent}
-          />
-          <StatCard
-            title="Total Profit"
-            value={formatCurrency(cashierTrend?.current?.profit || 0)}
-            trend={getTrendIndicator(cashierTrend?.profitChangePercent || 0)}
-            trendPercent={cashierTrend?.profitChangePercent}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-2 gap-3">
-          <StatCard title="Transactions" value={String(cashierTrend?.current?.transactions || 0)} />
-          <StatCard
-            title="Avg Transaction"
-            value={formatCurrency(cashierTrend?.current?.avgTransactionValue || 0)}
-          />
-        </div>
-
-        {/* Charts - Sales and Payment Methods only */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Sales Performance Metrics */}
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales Performance (30 Days)</h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={cashierPerformance || []}>
-                <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} tickFormatter={(d) => new Date(d).toLocaleDateString('en', { month: 'short', day: 'numeric' })} />
-                <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
-                <Legend />
-                <Line type="monotone" dataKey="sales" stroke="#475569" strokeWidth={2} dot={false} name="Daily Sales" />
-                <Line type="monotone" dataKey="profit" stroke="#15803d" strokeWidth={2} dot={false} name="Daily Profit" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Payment Methods */}
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Payment Methods</h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <defs>
-                  {COLORS.map((color, i) => (
-                    <pattern key={`pie-hatch-${i}`} id={`pieHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30})`}>
-                      <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
-                    </pattern>
-                  ))}
-                </defs>
-                <Pie
-                  data={(cashierPaymentMethods || []).map((p) => ({
-                    ...p,
-                    method: p.method.replace('CUSTOMER_CREDIT', 'Khata').replace('BANK_TRANSFER', 'Bank').replace('EASYPAISA', 'Easypaisa').replace('JAZZCASH', 'JazzCash'),
-                  }))}
-                  cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
-                  dataKey="amount" nameKey="method" strokeWidth={2}
-                >
-                  {(cashierPaymentMethods || []).map((_, i) => <Cell key={i} fill={`url(#pieHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
-                </Pie>
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
-                <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Category Sales */}
-          <div className="bg-white border border-gray-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Your Sales by Category</h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <defs>
-                  {COLORS.map((color, i) => (
-                    <pattern key={`cat-hatch-${i}`} id={`catHatch${i}`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform={`rotate(${i * 30 + 15})`}>
-                      <line x1="0" y1="0" x2="0" y2="6" stroke={color} strokeWidth="1.2" opacity="0.35" />
-                    </pattern>
-                  ))}
-                </defs>
-                <Pie
-                  data={cashierCategorySales || []} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2}
-                  dataKey="value" nameKey="name" strokeWidth={2}
-                >
-                  {(cashierCategorySales || []).map((_, i) => <Cell key={i} fill={`url(#catHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} />)}
-                </Pie>
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={tooltipStyle} />
-                <Legend verticalAlign="bottom" height={30} formatter={(v) => <span className="text-xs text-gray-600">{v}</span>} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // OWNER/MANAGER/OTHERS: Show all cards with trends
   return (
     <div className="space-y-6 max-w-7xl">
       <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
@@ -562,7 +568,7 @@ export function DashboardPage() {
               </defs>
               <Bar dataKey="quantity" radius={[3, 3, 0, 0]} barSize={24}>
                 {(stockByCategory || []).map((_, i) => (
-                  <Cell key={i} fill={`url(#stockHatch${i % 6})`} stroke={COLORS[i % 6]} strokeWidth={1.5} />
+                  <Cell key={i} fill={`url(#stockHatch${i % 6})`} stroke={COLORS[i % COLORS.length]} strokeWidth={1.5} />
                 ))}
               </Bar>
             </BarChart>
@@ -571,4 +577,14 @@ export function DashboardPage() {
       </div>
     </div>
   );
+}
+
+export function DashboardPage() {
+  const { profile } = useAuth();
+
+  if (profile?.role === 'CASHIER') {
+    return <CashierDashboard cashierId={profile.id} />;
+  }
+
+  return <OwnerDashboard />;
 }

@@ -283,12 +283,11 @@ export default function App() {
   return (
     <>
       {/* Silent offline infrastructure — no UI, no visible elements */}
-      {/* Temporarily disabled ALL offline components to isolate the issue */}
-      {/* <OfflineInitializer /> */}
-      {/* <OfflineSyncManager /> */}
+      <OfflineInitializer />
+      <OfflineSyncManager />
 
-      {/* Offline Data Viewer (visible on all environments for debugging) */}
-      {/* <OfflineDataViewer /> */}
+      {/* Offline Data Viewer */}
+      <OfflineDataViewer />
 
       <Routes>
         <Route path="/login" element={!session ? <LoginPage /> : <Navigate to="/" replace />} />

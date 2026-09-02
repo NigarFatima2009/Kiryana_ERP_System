@@ -248,7 +248,35 @@ export function SalesHistoryPage() {
 function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onClose: () => void; isOffline?: boolean; offlineSales?: OfflineSale[] }) {
   const [showReturnForm, setShowReturnForm] = useState(false);
   const [returnReason, setReturnReason] = useState('CUSTOMER_REQUEST');
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
   const { data: sale } = useQuery({ queryKey: ['sale', id], queryFn: () => fetchSale(id), enabled: !isOffline });
+
+  const returnMutation = useMutation({
+    mutationFn: async () => {
+      if (!sale) throw new Error('No sale found to return');
+      return createSalesReturn({
+        sale_id: sale.id,
+        return_reason: returnReason,
+        notes: '',
+      });
+    },
+    onSuccess: () => {
+      toast('success', 'Return created successfully');
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      queryClient.invalidateQueries({ queryKey: ['sale', id] });
+      queryClient.invalidateQueries({ queryKey: ['shift-sales'] }); // Refresh shift sales
+      queryClient.invalidateQueries({ queryKey: ['current-shift'] }); // Refresh shift expected cash
+      queryClient.invalidateQueries({ queryKey: ['inventory'] }); // Refresh inventory
+      queryClient.invalidateQueries({ queryKey: ['stock-movements'] }); // Refresh stock movements
+      setShowReturnForm(false);
+      onClose();
+    },
+    onError: (error: any) => {
+      toast('error', error.message || 'Failed to create return');
+    },
+  });
 
   // For offline sales, find from local array
   if (isOffline && offlineSales) {
@@ -304,33 +332,6 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
   }
 
   if (!sale) return <Modal isOpen={true} onClose={onClose} title="Loading..."><p>Loading...</p></Modal>;
-
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-
-  const returnMutation = useMutation({
-    mutationFn: async () => {
-      return createSalesReturn({
-        sale_id: sale.id,
-        return_reason: returnReason,
-        notes: '',
-      });
-    },
-    onSuccess: () => {
-      toast('success', 'Return created successfully');
-      queryClient.invalidateQueries({ queryKey: ['sales'] });
-      queryClient.invalidateQueries({ queryKey: ['sale', id] });
-      queryClient.invalidateQueries({ queryKey: ['shift-sales'] }); // Refresh shift sales
-      queryClient.invalidateQueries({ queryKey: ['current-shift'] }); // Refresh shift expected cash
-      queryClient.invalidateQueries({ queryKey: ['inventory'] }); // Refresh inventory
-      queryClient.invalidateQueries({ queryKey: ['stock-movements'] }); // Refresh stock movements
-      setShowReturnForm(false);
-      onClose();
-    },
-    onError: (error: any) => {
-      toast('error', error.message || 'Failed to create return');
-    },
-  });
 
   if (showReturnForm) {
     return (
