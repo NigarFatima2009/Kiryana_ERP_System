@@ -83,6 +83,8 @@ export async function fetchSupplierBalance(supplierId: string) {
 }
 
 export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' | 'payment_date'> & { goodsReceiptIds?: string[] }) {
+  console.log('[createSupplierPayment] Starting with payment:', payment);
+  
   const { data, error } = await supabase.from('supplier_payments').insert({
     supplier_id: payment.supplier_id,
     amount: payment.amount,
@@ -91,6 +93,8 @@ export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' 
     created_by: payment.created_by,
     payment_date: new Date().toISOString(),
   }).select().single();
+  
+  console.log('[createSupplierPayment] Payment inserted:', { data, error });
   if (error) throw error;
 
   // Get all unpaid goods receipts for this supplier if not specified
@@ -102,10 +106,13 @@ export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' 
       .eq('supplier_id', payment.supplier_id)
       .order('created_at', { ascending: true });
     receiptIds = (receipts || []).map(r => r.id);
+    console.log('[createSupplierPayment] Fetched receipts for FIFO allocation:', receiptIds);
   }
 
   // Allocate payment to receipts in FIFO order
   let remainingAmount = payment.amount;
+  console.log('[createSupplierPayment] Starting FIFO allocation with amount:', remainingAmount);
+  
   for (const receiptId of receiptIds || []) {
     if (remainingAmount <= 0) break;
 
@@ -121,21 +128,28 @@ export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' 
     const receiptTotal = Number(receipt.total);
     const amountForThisReceipt = Math.min(remainingAmount, receiptTotal);
 
+    console.log(`[createSupplierPayment] Allocating ${amountForThisReceipt} to receipt ${receiptId} (receipt total: ${receiptTotal})`);
+
     // Create transaction linking this payment to the receipt
-    await supabase.from('supplier_transactions').insert({
+    const { data: txn, error: txnError } = await supabase.from('supplier_transactions').insert({
       supplier_id: payment.supplier_id,
       transaction_type: 'PAYMENT',
       amount: amountForThisReceipt,
       reference_type: 'PURCHASE',
       reference_id: receiptId,
       narration: `Payment via ${payment.payment_method}`,
-    });
+    }).select().single();
+
+    console.log(`[createSupplierPayment] Transaction created:`, { txn, txnError });
 
     remainingAmount -= amountForThisReceipt;
   }
 
+  console.log('[createSupplierPayment] FIFO allocation complete. Remaining:', remainingAmount);
+
   // Create audit log
   await audit.supplierPayment(payment.supplier_id, payment.amount, payment.payment_method);
 
+  console.log('[createSupplierPayment] Success, returning:', data);
   return data as SupplierPayment;
 }

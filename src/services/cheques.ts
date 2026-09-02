@@ -237,8 +237,27 @@ export async function updateChequeStatus(
   status: ChequeStatus,
   notes?: string
 ): Promise<Cheque> {
+  let cheque: Cheque | null = null;
   const db = getOfflineDB();
-  const cheque = await db.cheques.get(id);
+
+  try {
+    cheque = (await db.cheques.get(id)) || null;
+  } catch (err) {
+    console.warn('[Cheques] Local DB read error:', err);
+  }
+
+  // If not found locally in IndexedDB, fetch directly from Supabase
+  if (!cheque && navigator.onLine) {
+    const { data: remoteData, error: remoteErr } = await supabase
+      .from('cheques')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (!remoteErr && remoteData) {
+      cheque = remoteData as Cheque;
+    }
+  }
+
   if (!cheque) throw new Error('Cheque not found');
 
   const now = new Date().toISOString();
@@ -248,91 +267,99 @@ export async function updateChequeStatus(
     notes: notes !== undefined ? notes : cheque.notes,
     cleared_at: status === 'CLEARED' ? now : cheque.cleared_at,
     updated_at: now,
-    synced: false,
+    synced: true,
   };
 
-  await db.cheques.put(updated);
-
+  // 1. Update in Supabase first (cloud source of truth for deployed instances)
   if (navigator.onLine) {
-    try {
-      await supabase
-        .from('cheques')
-        .update({
-          status,
-          notes: updated.notes,
-          cleared_at: updated.cleared_at,
-          updated_at: now,
-        })
-        .eq('id', id);
+    const { error: updateErr } = await supabase
+      .from('cheques')
+      .update({
+        status,
+        notes: updated.notes,
+        cleared_at: updated.cleared_at,
+        updated_at: now,
+      })
+      .eq('id', id);
 
-      // On Clearance: Notify management and sync linked sale status to COMPLETED / PAID
-      if (status === 'CLEARED') {
-        try {
-          const title = `✓ Cheque Cleared: ${cheque.cheque_number}`;
-          const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) for ${cheque.party_name} has been CLEARED by the bank.`;
-
-          const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
-          if (owners && owners.length > 0) {
-            for (const owner of owners) {
-              await supabase.from('notifications').insert({
-                recipient_id: owner.id,
-                type: 'CHEQUE_CLEARED',
-                title,
-                body,
-                entity_type: 'cheque',
-                entity_id: id,
-              });
-            }
-          }
-
-          // If linked to a sale (check notes for INV number), update sale status
-          if (cheque.notes) {
-            const invMatch = cheque.notes.match(/(INV-[A-Za-z0-9-]+)/);
-            if (invMatch && invMatch[1]) {
-              const invoiceNum = invMatch[1];
-              await supabase.from('sales').update({ status: 'COMPLETED' }).eq('invoice_number', invoiceNum);
-            }
-          }
-        } catch (syncErr) {
-          console.warn('[Cheques] Clearance sync error:', syncErr);
-        }
-      }
-
-      // On Bounce: Notify management immediately — bounced cheques need urgent attention
-      if (status === 'BOUNCED') {
-        try {
-          const title = `✕ Cheque BOUNCED: ${cheque.cheque_number}`;
-          const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) from ${cheque.party_name} via ${cheque.bank_name} has BOUNCED.${notes ? ` Reason: ${notes}` : ''} Please take immediate action.`;
-
-          const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
-          if (owners && owners.length > 0) {
-            for (const owner of owners) {
-              await supabase.from('notifications').insert({
-                recipient_id: owner.id,
-                type: 'CHEQUE_BOUNCED',
-                title,
-                body,
-                entity_type: 'cheque',
-                entity_id: id,
-              });
-            }
-          }
-
-          // If linked to a sale (check notes for INV number), mark it as needing attention
-          if (cheque.notes) {
-            const invMatch = cheque.notes.match(/(INV-[A-Za-z0-9-]+)/);
-            if (invMatch && invMatch[1]) {
-              const invoiceNum = invMatch[1];
-              await supabase.from('sales').update({ notes: `Cheque bounced: ${cheque.cheque_number}` }).eq('invoice_number', invoiceNum);
-            }
-          }
-        } catch (bounceErr) {
-          console.warn('[Cheques] Bounce notification error:', bounceErr);
-        }
-      }
-    } catch (e) {
-      console.warn('[Cheques] Remote update skipped:', e);
+    if (updateErr) {
+      console.error('[Cheques] Supabase update failed:', updateErr);
+      throw new Error(`Failed to update cheque in database: ${updateErr.message}`);
     }
+
+    // On Clearance: Notify management and sync linked sale status to COMPLETED / PAID
+    if (status === 'CLEARED') {
+      try {
+        const title = `✓ Cheque Cleared: ${cheque.cheque_number}`;
+        const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) for ${cheque.party_name} has been CLEARED by the bank.`;
+
+        const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
+        const recipients = owners && owners.length > 0 ? owners : [{ id: null }];
+        for (const owner of recipients) {
+          await supabase.from('notifications').insert({
+            recipient_id: owner.id,
+            type: 'CHEQUE_CLEARED',
+            title,
+            body,
+            entity_type: 'cheque',
+            entity_id: id,
+          });
+        }
+
+        // If linked to a sale (check reference_sale_id or notes for INV number), update sale status
+        if (cheque.reference_sale_id) {
+          await supabase.from('sales').update({ status: 'COMPLETED' }).eq('id', cheque.reference_sale_id);
+        } else if (cheque.notes) {
+          const invMatch = cheque.notes.match(/(INV-[A-Za-z0-9-]+)/);
+          if (invMatch && invMatch[1]) {
+            const invoiceNum = invMatch[1];
+            await supabase.from('sales').update({ status: 'COMPLETED' }).eq('invoice_number', invoiceNum);
+          }
+        }
+      } catch (syncErr) {
+        console.warn('[Cheques] Clearance sync error:', syncErr);
+      }
+    }
+
+    // On Bounce: Notify management immediately
+    if (status === 'BOUNCED') {
+      try {
+        const title = `✕ Cheque BOUNCED: ${cheque.cheque_number}`;
+        const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) from ${cheque.party_name} via ${cheque.bank_name} has BOUNCED.${notes ? ` Reason: ${notes}` : ''} Please take immediate action.`;
+
+        const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
+        const recipients = owners && owners.length > 0 ? owners : [{ id: null }];
+        for (const owner of recipients) {
+          await supabase.from('notifications').insert({
+            recipient_id: owner.id,
+            type: 'CHEQUE_BOUNCED',
+            title,
+            body,
+            entity_type: 'cheque',
+            entity_id: id,
+          });
+        }
+
+        if (cheque.reference_sale_id) {
+          await supabase.from('sales').update({ notes: `Cheque bounced: ${cheque.cheque_number}` }).eq('id', cheque.reference_sale_id);
+        } else if (cheque.notes) {
+          const invMatch = cheque.notes.match(/(INV-[A-Za-z0-9-]+)/);
+          if (invMatch && invMatch[1]) {
+            const invoiceNum = invMatch[1];
+            await supabase.from('sales').update({ notes: `Cheque bounced: ${cheque.cheque_number}` }).eq('invoice_number', invoiceNum);
+          }
+        }
+      } catch (bounceErr) {
+        console.warn('[Cheques] Bounce notification error:', bounceErr);
+      }
+    }
+  }
+
+  // 2. Also cache updated state locally in IndexedDB
+  try {
+    await db.cheques.put(updated);
+  } catch (dbPutErr) {
+    console.warn('[Cheques] Local DB put failed:', dbPutErr);
   }
 
   return updated;
@@ -342,15 +369,19 @@ export async function updateChequeStatus(
  * Delete a cheque record
  */
 export async function deleteCheque(id: string): Promise<void> {
-  const db = getOfflineDB();
-  await db.cheques.delete(id);
-
   if (navigator.onLine) {
-    try {
-      await supabase.from('cheques').delete().eq('id', id);
-    } catch (e) {
-      console.warn('[Cheques] Remote delete skipped:', e);
+    const { error } = await supabase.from('cheques').delete().eq('id', id);
+    if (error) {
+      console.error('[Cheques] Remote delete failed:', error);
+      throw new Error(`Failed to delete cheque: ${error.message}`);
     }
+  }
+
+  try {
+    const db = getOfflineDB();
+    await db.cheques.delete(id);
+  } catch (err) {
+    console.warn('[Cheques] Local delete failed:', err);
   }
 }
 

@@ -266,36 +266,54 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
 
   // Instant direct PO autofill handler on select
   const handlePOSelect = async (selectedPoId: string) => {
+    console.log('[GoodsReceiptForm] PO select handler triggered with ID:', selectedPoId);
     setPurchaseOrderId(selectedPoId);
-    if (!selectedPoId) return;
+    if (!selectedPoId) {
+      console.log('[GoodsReceiptForm] Empty PO ID, clearing items');
+      return;
+    }
 
     setIsLoadingPO(true);
     try {
+      console.log('[GoodsReceiptForm] Calling fetchPurchaseOrder...');
       const poData = await fetchPurchaseOrder(selectedPoId);
+      console.log('[GoodsReceiptForm] Received PO data:', poData);
+      
       if (!poData) {
+        console.log('[GoodsReceiptForm] No PO data returned');
         toast('error', 'Purchase order not found');
         return;
       }
 
       // 1. Autofill Supplier
+      console.log('[GoodsReceiptForm] Setting supplier:', poData.supplier_id);
       if (poData.supplier_id) {
         setSupplierId(poData.supplier_id);
       }
 
       // 2. Autofill Items with Product, Qty, Unit Cost
       const poItems = poData.purchase_order_items || [];
+      console.log('[GoodsReceiptForm] Items from PO:', poItems);
+      console.log('[GoodsReceiptForm] Items count:', poItems.length);
+      
       if (poItems.length > 0) {
-        const filledItems = poItems.map((item: any) => ({
-          product_id: item.product_id,
-          quantity: Math.max(1, Number(item.quantity) - Number(item.received_quantity || 0)),
-          unit_cost: Number(item.unit_cost) || 0,
-          batch_number: '',
-          expiry_date: '',
-        }));
+        const filledItems = poItems.map((item: any) => {
+          const remaining = Math.max(1, Number(item.quantity) - Number(item.received_quantity || 0));
+          console.log(`[GoodsReceiptForm] Processing item: qty=${item.quantity}, received=${item.received_quantity}, remaining=${remaining}`);
+          return {
+            product_id: item.product_id,
+            quantity: remaining,
+            unit_cost: Number(item.unit_cost) || 0,
+            batch_number: '',
+            expiry_date: '',
+          };
+        });
 
+        console.log('[GoodsReceiptForm] Filled items:', filledItems);
         setItems(filledItems);
         toast('success', `✓ Auto-filled ${filledItems.length} item(s) from PO ${poData.order_number}`);
       } else {
+        console.log('[GoodsReceiptForm] No items in PO');
         toast('info', `PO ${poData.order_number} has no line items.`);
       }
     } catch (err: any) {

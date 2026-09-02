@@ -33,6 +33,8 @@ export async function fetchPurchaseOrders(params?: {
 }
 
 export async function fetchPurchaseOrder(id: string) {
+  console.log('[fetchPurchaseOrder] Starting with id:', id);
+  
   // Fetch main purchase order
   const { data: po, error: poError } = await supabase
     .from('purchase_orders')
@@ -40,9 +42,11 @@ export async function fetchPurchaseOrder(id: string) {
     .eq('id', id)
     .single();
   
+  console.log('[fetchPurchaseOrder] PO fetch result:', { po, poError });
   if (poError) throw poError;
 
   // Fetch supplier and items safely
+  console.log('[fetchPurchaseOrder] Fetching supplier and items in parallel...');
   const [supplierRes, itemsRes] = await Promise.all([
     po.supplier_id
       ? supabase.from('suppliers').select('*').eq('id', po.supplier_id).maybeSingle()
@@ -50,17 +54,26 @@ export async function fetchPurchaseOrder(id: string) {
     supabase.from('purchase_order_items').select('*').eq('purchase_order_id', id)
   ]);
 
+  console.log('[fetchPurchaseOrder] Supplier fetch:', supplierRes);
+  console.log('[fetchPurchaseOrder] Items fetch:', itemsRes);
+
   const items = itemsRes.data || [];
   const supplier = supplierRes.data || null;
 
+  console.log('[fetchPurchaseOrder] Items array length:', items.length);
+  console.log('[fetchPurchaseOrder] Items data:', items);
+
   // Batch fetch products for all items
   const productIds = [...new Set(items.map((i: any) => i.product_id).filter(Boolean))];
+  console.log('[fetchPurchaseOrder] Product IDs to fetch:', productIds);
+  
   let prodMap = new Map();
   if (productIds.length > 0) {
     const { data: products } = await supabase
       .from('products')
       .select('id, name, sku, purchase_price, selling_price')
       .in('id', productIds);
+    console.log('[fetchPurchaseOrder] Products fetched:', products);
     prodMap = new Map((products || []).map((p) => [p.id, p]));
   }
 
@@ -70,11 +83,16 @@ export async function fetchPurchaseOrder(id: string) {
     products: prodMap.get(item.product_id) || { id: item.product_id, name: 'Unknown Product', sku: '' }
   }));
 
-  return {
+  console.log('[fetchPurchaseOrder] Enriched items:', enrichedItems);
+
+  const result = {
     ...po,
     suppliers: supplier,
     purchase_order_items: enrichedItems
   };
+  
+  console.log('[fetchPurchaseOrder] Final result:', result);
+  return result;
 }
 
 export async function createPurchaseOrder(order: {

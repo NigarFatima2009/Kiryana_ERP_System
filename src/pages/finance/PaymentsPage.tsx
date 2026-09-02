@@ -621,20 +621,25 @@ function PaymentForm({
         finalRef = `${chequeNumber.trim()} (${bankName})`;
 
         // AUTOMATICALLY CREATE THE CHEQUE IN CHEQUES TABLE!
-        await createCheque({
-          cheque_number: chequeNumber.trim(),
-          type: type === 'customer' ? 'RECEIVED' : 'ISSUED',
-          party_type: type === 'customer' ? 'CUSTOMER' : 'SUPPLIER',
-          party_id: entityId,
-          party_name: partyName,
-          bank_name: bankName,
-          drawer_title: drawerTitle.trim() || undefined,
-          amount,
-          issue_date: new Date().toISOString().slice(0, 10),
-          due_date: chequeDueDate,
-          status: 'PENDING',
-          notes: `Recorded via ${type} payment on ${new Date().toLocaleDateString()}`,
-        });
+        try {
+          await createCheque({
+            cheque_number: chequeNumber.trim(),
+            type: type === 'customer' ? 'RECEIVED' : 'ISSUED',
+            party_type: type === 'customer' ? 'CUSTOMER' : 'SUPPLIER',
+            party_id: entityId,
+            party_name: partyName,
+            bank_name: bankName,
+            drawer_title: drawerTitle.trim() || undefined,
+            amount,
+            issue_date: new Date().toISOString().slice(0, 10),
+            due_date: chequeDueDate,
+            status: 'PENDING',
+            notes: `Recorded via ${type} payment on ${new Date().toLocaleDateString()}`,
+          });
+        } catch (chequeError: any) {
+          console.warn('[PaymentForm] Cheque registration failed (table may not exist):', chequeError);
+          // Continue with payment recording even if cheque fails - cheques table may not be created yet
+        }
       }
 
       // Record payment
