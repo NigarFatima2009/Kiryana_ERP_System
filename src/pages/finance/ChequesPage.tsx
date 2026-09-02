@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   CheckCircle,
   XCircle,
@@ -586,6 +587,8 @@ interface Summary {
 export function ChequesPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightChequeId = searchParams.get('id');
 
   const [filterType, setFilterType] = useState<ChequeType | 'ALL'>('ALL');
   const [filterStatus, setFilterStatus] = useState<ChequeStatus | 'ALL'>('ALL');
@@ -628,6 +631,18 @@ export function ChequesPage() {
     () => cheques.filter((c) => c.status === 'PENDING' && new Date(c.due_date) < new Date()).length,
     [cheques]
   );
+
+  // Auto-open cheque detail when navigated from notification (?id=...)
+  useEffect(() => {
+    if (highlightChequeId && cheques.length > 0 && !selectedForView) {
+      const cheque = cheques.find((c) => c.id === highlightChequeId);
+      if (cheque) {
+        setSelectedForView(cheque);
+        // Clear the URL param so re-renders don't re-open the modal
+        setSearchParams({}, { replace: true });
+      }
+    }
+  }, [highlightChequeId, cheques, selectedForView, setSearchParams]);
 
   return (
     <div className="p-6 space-y-6">

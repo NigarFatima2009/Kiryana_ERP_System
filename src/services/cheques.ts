@@ -111,46 +111,55 @@ export async function fetchCheques(params?: {
   status?: ChequeStatus;
   search?: string;
 }): Promise<Cheque[]> {
+  // When online, ALWAYS fetch from Supabase (other users' cheques live here)
+  // then merge with local IndexedDB (unsynced offline cheques from this device).
+  let serverCheques: Cheque[] = [];
+  let localCheques: Cheque[] = [];
+
   try {
-    const db = getOfflineDB();
-    let cheques = await db.cheques.toArray();
-
-    if (cheques.length === 0 && navigator.onLine) {
-      // Try to load any remote cheques if available from Supabase table
-      try {
-        const { data, error } = await supabase
-          .from('cheques')
-          .select('*')
-          .order('due_date', { ascending: true });
-        
-        if (!error && data && data.length > 0) {
-          cheques = data as Cheque[];
-          await db.cheques.bulkPut(cheques);
-        }
-      } catch (remoteErr) {
-        console.warn('[Cheques] Supabase sync not available, using local:', remoteErr);
-      }
-    }
-
-    // Apply filtering
-    return cheques.filter((c) => {
-      if (params?.type && c.type !== params.type) return false;
-      if (params?.status && c.status !== params.status) return false;
-      if (params?.search) {
-        const q = params.search.toLowerCase();
-        const matches =
-          c.cheque_number.toLowerCase().includes(q) ||
-          c.party_name.toLowerCase().includes(q) ||
-          c.bank_name.toLowerCase().includes(q) ||
-          (c.drawer_title && c.drawer_title.toLowerCase().includes(q));
-        if (!matches) return false;
-      }
-      return true;
-    }).sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
-  } catch (err) {
-    console.error('[Cheques] Error fetching cheques:', err);
-    return [];
+    localCheques = await getOfflineDB().cheques.toArray();
+  } catch (dbErr) {
+    console.warn('[Cheques] Local DB read failed:', dbErr);
   }
+
+  if (navigator.onLine) {
+    try {
+      const { data, error } = await supabase
+        .from('cheques')
+        .select('*')
+        .order('due_date', { ascending: true });
+      if (!error && data) {
+        serverCheques = data as Cheque[];
+        // Cache server data locally for offline fallback
+        try {
+          await getOfflineDB().cheques.bulkPut(serverCheques);
+        } catch {}
+      }
+    } catch (remoteErr) {
+      console.warn('[Cheques] Supabase fetch failed:', remoteErr);
+    }
+  }
+
+  // Merge: server cheques + local-only (unsynced) cheques, deduplicated by id
+  const serverIds = new Set(serverCheques.map((c) => c.id));
+  const unsyncedLocal = localCheques.filter((c) => !serverIds.has(c.id));
+  const allCheques = [...serverCheques, ...unsyncedLocal];
+
+  // Apply filtering
+  return allCheques.filter((c) => {
+    if (params?.type && c.type !== params.type) return false;
+    if (params?.status && c.status !== params.status) return false;
+    if (params?.search) {
+      const q = params.search.toLowerCase();
+      const matches =
+        c.cheque_number.toLowerCase().includes(q) ||
+        c.party_name.toLowerCase().includes(q) ||
+        c.bank_name.toLowerCase().includes(q) ||
+        (c.drawer_title && c.drawer_title.toLowerCase().includes(q));
+      if (!matches) return false;
+    }
+    return true;
+  }).sort((a, b) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
 }
 
 /**
@@ -267,7 +276,7 @@ export async function updateChequeStatus(
       if (status === 'CLEARED') {
         try {
           const title = `✓ Cheque Cleared: ${cheque.cheque_number}`;
-          const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) for ${cheque.party_name} has been CLEARED by management.`;
+          const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) for ${cheque.party_name} has been CLEARED by the bank.`;
 
           const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
           if (owners && owners.length > 0) {
@@ -293,6 +302,39 @@ export async function updateChequeStatus(
           }
         } catch (syncErr) {
           console.warn('[Cheques] Clearance sync error:', syncErr);
+        }
+      }
+
+      // On Bounce: Notify management immediately — bounced cheques need urgent attention
+      if (status === 'BOUNCED') {
+        try {
+          const title = `✕ Cheque BOUNCED: ${cheque.cheque_number}`;
+          const body = `Cheque #${cheque.cheque_number} (Rs. ${Number(cheque.amount).toLocaleString()}) from ${cheque.party_name} via ${cheque.bank_name} has BOUNCED.${notes ? ` Reason: ${notes}` : ''} Please take immediate action.`;
+
+          const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
+          if (owners && owners.length > 0) {
+            for (const owner of owners) {
+              await supabase.from('notifications').insert({
+                recipient_id: owner.id,
+                type: 'CHEQUE_BOUNCED',
+                title,
+                body,
+                entity_type: 'cheque',
+                entity_id: id,
+              });
+            }
+          }
+
+          // If linked to a sale (check notes for INV number), mark it as needing attention
+          if (cheque.notes) {
+            const invMatch = cheque.notes.match(/(INV-[A-Za-z0-9-]+)/);
+            if (invMatch && invMatch[1]) {
+              const invoiceNum = invMatch[1];
+              await supabase.from('sales').update({ notes: `Cheque bounced: ${cheque.cheque_number}` }).eq('invoice_number', invoiceNum);
+            }
+          }
+        } catch (bounceErr) {
+          console.warn('[Cheques] Bounce notification error:', bounceErr);
         }
       }
     } catch (e) {
@@ -323,8 +365,8 @@ export async function deleteCheque(id: string): Promise<void> {
  * Get summary dashboard metrics for cheques
  */
 export async function getChequesSummary() {
-  const db = getOfflineDB();
-  const cheques = await db.cheques.toArray();
+  // Reuse the same merge logic as fetchCheques so summary reflects all cheques
+  const allCheques = await fetchCheques();
 
   let pendingReceivedAmount = 0;
   let pendingIssuedAmount = 0;
@@ -336,7 +378,7 @@ export async function getChequesSummary() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  cheques.forEach((c) => {
+  allCheques.forEach((c) => {
     if (c.status === 'PENDING') {
       if (c.type === 'RECEIVED') {
         pendingReceivedAmount += Number(c.amount);
@@ -365,7 +407,7 @@ export async function getChequesSummary() {
     dueWithin15DaysAmount,
     overdueCount,
     overdueAmount,
-    totalChequesCount: cheques.length,
+    totalChequesCount: allCheques.length,
   };
 }
 

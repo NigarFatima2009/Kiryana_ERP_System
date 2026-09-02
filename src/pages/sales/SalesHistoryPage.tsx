@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Eye, Trash2, Clock, Banknote, ArrowUpRight } from 'lucide-react';
+import { Eye, Trash2, Clock, Banknote, ArrowUpRight, CheckCircle, XCircle, Building2, Calendar, AlertTriangle } from 'lucide-react';
 import { fetchSales, fetchSale, cancelSale, createSalesReturn } from '../../services/sales';
+import { fetchCheques, updateChequeStatus, getChequeMaturityInfo, type Cheque } from '../../services/cheques';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
@@ -10,7 +11,7 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { ExportButtons } from '../../components/ui/ExportButtons';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
-import { formatCurrency, formatDateTime } from '../../utils/helpers';
+import { formatCurrency, formatDateTime, formatDate } from '../../utils/helpers';
 import { getAllOfflineSales, OFFLINE_SALES_CHANGED_EVENT } from '../../lib/offline/offlineSales';
 import { useNetworkStatus } from '../../hooks/useOfflineStatus';
 import type { OfflineSale } from '../../lib/offline/types';
@@ -192,47 +193,59 @@ export function SalesHistoryPage() {
       return '-';
     }},
     { key: 'status', header: 'Status', render: (row) => {
+      const chequePayment = (row as any).sale_payments?.find((p: any) => p.payment_method === 'CHEQUE')
+        || (row as any).payment_methods?.find((p: any) => p.method === 'CHEQUE');
       const hasCheque =
         Boolean((row as any).cheque) ||
-        Boolean((row as any).sale_payments?.some((p: any) => p.payment_method === 'CHEQUE')) ||
-        Boolean((row as any).payment_methods?.some((p: any) => p.method === 'CHEQUE')) ||
+        Boolean(chequePayment) ||
         (typeof row.notes === 'string' && row.notes.includes('Cheque'));
 
-      const chequeStatus = (row as any).cheque?.status;
+      const linkedCheque: Cheque | undefined = (row as any).cheque;
+      const chequeStatus = linkedCheque?.status;
+      const chequeNum = linkedCheque?.cheque_number;
+      const chequeAmt = linkedCheque ? formatCurrency(Number(linkedCheque.amount)) : '';
 
-      if (hasCheque && chequeStatus !== 'CLEARED' && getStatus(row) !== 'CANCELLED' && getStatus(row) !== 'RETURNED') {
+      if (hasCheque && getStatus(row) !== 'CANCELLED' && getStatus(row) !== 'RETURNED') {
+        if (chequeStatus === 'CLEARED') {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                <CheckCircle size={11} /> Cheque Cleared
+              </span>
+              {chequeNum && <span className="text-[10px] text-gray-400 font-mono">{chequeNum}</span>}
+            </div>
+          );
+        }
         if (chequeStatus === 'BOUNCED') {
           return (
             <div className="flex flex-col items-start gap-0.5">
-              <span className="badge bg-red-100 text-red-800 border border-red-200 font-semibold text-[11px]">
-                ✕ Cheque Bounced
+              <span className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                <XCircle size={11} /> Cheque Bounced
               </span>
+              {chequeNum && <span className="text-[10px] text-gray-400 font-mono">{chequeNum}</span>}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate('/cheques');
-                }}
-                className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
+                onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
+                className="text-[11px] text-red-600 hover:text-red-800 flex items-center gap-0.5 font-medium underline"
               >
-                Cheque Mgmt <ArrowUpRight size={11} />
+                Action Required <ArrowUpRight size={11} />
               </button>
             </div>
           );
         }
-
+        // PENDING (or unknown)
         return (
           <div className="flex flex-col items-start gap-0.5">
-            <span className="badge bg-amber-100 text-amber-800 border border-amber-300 font-semibold flex items-center gap-1 text-[11px]">
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800 animate-pulse">
               <Banknote size={11} /> Cheque Pending
             </span>
+            {chequeNum && (
+              <span className="text-[10px] text-gray-500 font-mono">{chequeNum}{chequeAmt ? ` · ${chequeAmt}` : ''}</span>
+            )}
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                navigate('/cheques');
-              }}
+              onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
               className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
             >
-              Clear in Cheques <ArrowUpRight size={11} />
+              Clear / Bounce <ArrowUpRight size={11} />
             </button>
           </div>
         );
@@ -589,6 +602,42 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
     );
   }
 
+  // ── Fetch any cheque linked to this sale (by reference_sale_id OR invoice in notes) ──
+  const { data: allCheques = [] } = useQuery({
+    queryKey: ['cheques-for-sale', sale.id],
+    queryFn: () => fetchCheques(),
+    staleTime: 15000,
+  });
+  const linkedCheque: Cheque | undefined = allCheques.find(
+    (c) =>
+      c.reference_sale_id === sale.id ||
+      (c.notes && c.notes.includes(sale.invoice_number))
+  );
+
+  const clearMutation = useMutation({
+    mutationFn: () => updateChequeStatus(linkedCheque!.id, 'CLEARED'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cheques'] });
+      queryClient.invalidateQueries({ queryKey: ['cheques-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['cheques-for-sale', sale.id] });
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      toast('success', `✓ Cheque ${linkedCheque?.cheque_number} marked as Cleared.`);
+    },
+    onError: (e: Error) => toast('error', e.message),
+  });
+
+  const bounceMutation = useMutation({
+    mutationFn: () => updateChequeStatus(linkedCheque!.id, 'BOUNCED'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cheques'] });
+      queryClient.invalidateQueries({ queryKey: ['cheques-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['cheques-for-sale', sale.id] });
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      toast('error', `✕ Cheque ${linkedCheque?.cheque_number} marked as Bounced.`);
+    },
+    onError: (e: Error) => toast('error', e.message),
+  });
+
   return (
     <Modal isOpen={true} onClose={onClose} title={`Invoice: ${sale.invoice_number}`} size="lg">
       <div className="space-y-4 text-sm">
@@ -601,6 +650,112 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
             <div><span className="text-slate-500">Status:</span> <span className="font-bold text-blue-600">{sale.status}</span></div>
           </div>
         </div>
+
+        {/* ── Cheque Section ── */}
+        {linkedCheque && (() => {
+          const maturity = getChequeMaturityInfo(linkedCheque.due_date, linkedCheque.status);
+          const isBusy = clearMutation.isPending || bounceMutation.isPending;
+          const canAct = linkedCheque.status === 'PENDING';
+          return (
+            <div className={`rounded-xl border-2 p-4 space-y-3 ${
+              linkedCheque.status === 'CLEARED' ? 'border-emerald-200 bg-emerald-50/60' :
+              linkedCheque.status === 'BOUNCED'  ? 'border-red-200 bg-red-50/60' :
+              'border-amber-300 bg-amber-50/60'
+            }`}>
+              {/* Header */}
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <Banknote size={16} className="text-blue-600 shrink-0" />
+                  <span className="font-bold text-gray-900 text-sm">Cheque Payment</span>
+                  <span className="font-mono text-xs font-bold text-blue-700">{linkedCheque.cheque_number}</span>
+                </div>
+                <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${maturity.badgeClass}`}>
+                  {maturity.label}
+                </span>
+              </div>
+
+              {/* Detail grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <Building2 size={12} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500">Party:</span>
+                  <span className="font-semibold text-gray-800 truncate">{linkedCheque.party_name}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Banknote size={12} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500">Amount:</span>
+                  <span className="font-bold text-gray-900">{formatCurrency(Number(linkedCheque.amount))}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Building2 size={12} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500">Bank:</span>
+                  <span className="font-semibold text-gray-800">{linkedCheque.bank_name}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Calendar size={12} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500">Issue Date:</span>
+                  <span className="font-semibold text-gray-800">{formatDate(linkedCheque.issue_date)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Calendar size={12} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500">Due Date:</span>
+                  <span className="font-semibold text-gray-800">{formatDate(linkedCheque.due_date)}</span>
+                </div>
+                {linkedCheque.drawer_title && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-gray-500">Drawer:</span>
+                    <span className="font-semibold text-gray-800">{linkedCheque.drawer_title}</span>
+                  </div>
+                )}
+                {linkedCheque.account_number && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-gray-500">Account #:</span>
+                    <span className="font-semibold text-gray-800">{linkedCheque.account_number}</span>
+                  </div>
+                )}
+                {linkedCheque.cleared_at && (
+                  <div className="col-span-2 flex items-center gap-1.5 text-emerald-700">
+                    <CheckCircle size={12} />
+                    <span className="font-semibold">Cleared on {formatDate(linkedCheque.cleared_at)}</span>
+                  </div>
+                )}
+                {linkedCheque.notes && (
+                  <div className="col-span-2 text-gray-400 italic text-[11px] truncate">📝 {linkedCheque.notes}</div>
+                )}
+              </div>
+
+              {/* Bounced warning */}
+              {linkedCheque.status === 'BOUNCED' && (
+                <div className="flex items-center gap-2 rounded-lg bg-red-100 border border-red-200 px-3 py-2 text-xs text-red-800 font-semibold">
+                  <AlertTriangle size={13} />
+                  This cheque has bounced. Please follow up with the customer immediately.
+                </div>
+              )}
+
+              {/* Action buttons — only for owner/manager on PENDING cheques */}
+              {canAct && (
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    disabled={isBusy}
+                    onClick={() => clearMutation.mutate()}
+                    className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold py-2 transition-colors"
+                  >
+                    <CheckCircle size={13} />
+                    {clearMutation.isPending ? 'Clearing…' : 'Mark as Cleared'}
+                  </button>
+                  <button
+                    disabled={isBusy}
+                    onClick={() => bounceMutation.mutate()}
+                    className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold py-2 transition-colors"
+                  >
+                    <XCircle size={13} />
+                    {bounceMutation.isPending ? 'Saving…' : 'Mark as Bounced'}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Action Export Buttons */}
         <div className="flex flex-wrap gap-2 justify-end">

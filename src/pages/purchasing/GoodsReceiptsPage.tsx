@@ -259,23 +259,68 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
 
   // Auto-fill items when a full PO is loaded
   useEffect(() => {
-    if (fullPO && (fullPO as any).purchase_order_items) {
-      setSupplierId((fullPO as any).supplier_id || '');
-      const poItems = (fullPO as any).purchase_order_items
-        .map((item: Record<string, unknown>) => ({
-          product_id: item.product_id as string,
-          quantity: Number(item.quantity) - Number(item.received_quantity || 0),
+    console.log('[GoodsReceipt Auto-fill] fullPO:', fullPO);
+    console.log('[GoodsReceipt Auto-fill] purchaseOrderId:', purchaseOrderId);
+    
+    if (!fullPO) {
+      console.log('[GoodsReceipt Auto-fill] No fullPO data');
+      return;
+    }
+    
+    if (!purchaseOrderId) {
+      console.log('[GoodsReceipt Auto-fill] No purchaseOrderId');
+      return;
+    }
+
+    // Check if PO has items
+    const poItems = fullPO.purchase_order_items;
+    console.log('[GoodsReceipt Auto-fill] purchase_order_items:', poItems);
+    console.log('[GoodsReceipt Auto-fill] items count:', poItems?.length);
+    
+    if (!poItems || poItems.length === 0) {
+      console.log('[GoodsReceipt Auto-fill] No items in PO');
+      return;
+    }
+
+    // Set supplier
+    if (fullPO.supplier_id) {
+      console.log('[GoodsReceipt Auto-fill] Setting supplier to:', fullPO.supplier_id);
+      setSupplierId(fullPO.supplier_id);
+    }
+
+    // Map and filter items
+    const filledItems = poItems
+      .map((item: any) => {
+        console.log('[GoodsReceipt Auto-fill] Processing item:', {
+          id: item.id,
+          product_id: item.product_id,
+          quantity: item.quantity,
+          received: item.received_quantity,
+          cost: item.unit_cost
+        });
+        return {
+          product_id: item.product_id,
+          quantity: Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0)),
           unit_cost: Number(item.unit_cost),
           batch_number: '',
           expiry_date: '',
-        }))
-        .filter((i: { quantity: number }) => i.quantity > 0);
-      if (poItems.length > 0) {
-        setItems(poItems);
-        toast('success', `Auto-filled ${poItems.length} items from Purchase Order`);
-      }
+        };
+      })
+      .filter((i: any) => {
+        console.log('[GoodsReceipt Auto-fill] Filtered item qty:', i.quantity, 'passes:', i.quantity > 0);
+        return i.quantity > 0;
+      });
+
+    console.log('[GoodsReceipt Auto-fill] Final items to fill:', filledItems);
+
+    if (filledItems.length > 0) {
+      console.log('[GoodsReceipt Auto-fill] Setting items:', filledItems);
+      setItems(filledItems);
+      toast('success', `Auto-filled ${filledItems.length} items from Purchase Order`);
+    } else {
+      console.log('[GoodsReceipt Auto-fill] No items with qty > 0');
     }
-  }, [fullPO]);
+  }, [fullPO, purchaseOrderId, toast]);
 
   const addItem = () =>
     setItems([...items, { product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
