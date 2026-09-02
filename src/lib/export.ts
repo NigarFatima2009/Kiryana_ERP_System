@@ -85,7 +85,7 @@ export function generateInvoicePDF(
     subtotal: number;
     tax: number;
     total: number;
-    payments?: any;
+    payments?: Array<{ method: string; amount: number; reference?: string | null }>;
     notes?: string;
   }
 ): void {
@@ -102,6 +102,27 @@ export function generateInvoicePDF(
     </tr>
   `).join('');
 
+  const paymentRows = (invoice.payments && invoice.payments.length > 0)
+    ? `
+      <div style="margin-top:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px;">
+        <h4 style="margin:0 0 6px;font-size:11px;text-transform:uppercase;color:#475569;font-weight:700;">Payment Details</h4>
+        ${invoice.payments.map((p) => `
+          <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px dashed #e2e8f0;">
+            <span>
+              <strong>${p.method.replace('CUSTOMER_CREDIT', 'Khata / Credit')}</strong>
+              ${p.reference ? `<span style="color:#64748b;font-size:11px;margin-left:6px;">(${p.reference})</span>` : ''}
+            </span>
+            <span style="font-weight:700;">Rs. ${p.amount.toFixed(2)}</span>
+          </div>
+        `).join('')}
+      </div>
+    `
+    : '';
+
+  const notesHtml = invoice.notes
+    ? `<div style="margin-top:12px;font-size:12px;color:#64748b;font-style:italic;">📝 ${invoice.notes}</div>`
+    : '';
+
   printWindow.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoiceNumber}</title>
   <style>body{font-family:system-ui,sans-serif;color:#1e293b;padding:24px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#f8fafc;padding:8px;text-align:left;font-size:11px;text-transform:uppercase;color:#64748b}</style></head>
   <body><div style="max-width:700px;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;padding:24px;">
@@ -115,6 +136,8 @@ export function generateInvoicePDF(
       ${invoice.tax > 0 ? `<p style="margin:0;">Tax: Rs. ${invoice.tax.toFixed(2)}</p>` : ''}
       <p style="margin:4px 0 0;font-size:18px;font-weight:700;color:#2563eb;">Total: Rs. ${invoice.total.toFixed(2)}</p>
     </div>
+    ${paymentRows}
+    ${notesHtml}
   </div><script>window.onload=()=>setTimeout(()=>window.print(),400)</script></body></html>`);
   printWindow.document.close();
 }

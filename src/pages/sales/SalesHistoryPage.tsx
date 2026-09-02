@@ -864,8 +864,11 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
               payments: (sale.sale_payments || []).map((p: any) => ({
                 method: p.payment_method.replace('CUSTOMER_CREDIT', 'Khata / Credit'),
                 amount: Number(p.amount),
+                reference: p.reference || (linkedCheque && p.payment_method === 'CHEQUE' ? `Cheque #${linkedCheque.cheque_number} (${linkedCheque.bank_name}) [Due: ${formatDate(linkedCheque.due_date)}]` : undefined),
               })),
-              notes: sale.status === 'CANCELLED' ? 'This invoice has been cancelled' : undefined,
+              notes: linkedCheque
+                ? `Cheque Payment: Cheque #${linkedCheque.cheque_number} • ${linkedCheque.bank_name} • Due: ${formatDate(linkedCheque.due_date)} • Status: ${linkedCheque.status}${linkedCheque.drawer_title ? ` • Drawer: ${linkedCheque.drawer_title}` : ''}`
+                : (sale.status === 'CANCELLED' ? 'This invoice has been cancelled' : undefined),
             }}
           />
         </div>

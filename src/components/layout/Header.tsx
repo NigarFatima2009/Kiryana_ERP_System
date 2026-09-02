@@ -154,14 +154,11 @@ export function Header({ onMenuToggle }: HeaderProps) {
     staleTime: 10000,
   });
 
-  const hasPendingCheques = Boolean(
-    chequesSummary &&
-      (chequesSummary.pendingReceivedAmount > 0 ||
-        chequesSummary.overdueCount > 0 ||
-        chequesSummary.totalChequesCount > 0)
-  );
-
+  const pendingCount = chequesSummary?.pendingCount ?? 0;
   const overdueCount = chequesSummary?.overdueCount ?? 0;
+  const hasPendingCheques = Boolean(
+    chequesSummary && (pendingCount > 0 || overdueCount > 0)
+  );
   const totalPending = pendingCheques.length;
 
   return (
@@ -203,7 +200,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
               <span>
                 {overdueCount > 0
                   ? `${overdueCount} Overdue Cheque${overdueCount > 1 ? 's' : ''}`
-                  : `${chequesSummary!.totalChequesCount} Pending Cheque${chequesSummary!.totalChequesCount !== 1 ? 's' : ''}`}
+                  : `${pendingCount} Pending Cheque${pendingCount !== 1 ? 's' : ''}`}
               </span>
               {/* unread dot */}
               {overdueCount > 0 && (
@@ -241,7 +238,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
                   <div className="grid grid-cols-3 divide-x divide-gray-100 border-b border-gray-100 bg-white">
                     <div className="px-3 py-2 text-center">
                       <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">Pending</p>
-                      <p className="text-sm font-bold text-gray-900">{chequesSummary.totalChequesCount}</p>
+                      <p className="text-sm font-bold text-gray-900">{pendingCount}</p>
                     </div>
                     <div className="px-3 py-2 text-center">
                       <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">Overdue</p>

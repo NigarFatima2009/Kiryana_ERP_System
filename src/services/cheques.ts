@@ -367,12 +367,14 @@ export async function getChequesSummary() {
   let dueWithin15DaysAmount = 0;
   let overdueCount = 0;
   let overdueAmount = 0;
+  let pendingCount = 0;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   allCheques.forEach((c) => {
     if (c.status === 'PENDING') {
+      pendingCount++;
       if (c.type === 'RECEIVED') {
         pendingReceivedAmount += Number(c.amount);
       } else {
@@ -394,6 +396,7 @@ export async function getChequesSummary() {
   });
 
   return {
+    pendingCount,
     pendingReceivedAmount,
     pendingIssuedAmount,
     dueWithin15DaysCount,

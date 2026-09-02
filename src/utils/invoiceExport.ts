@@ -409,7 +409,10 @@ export function exportInvoicePDF(invoice: InvoiceExportData) {
         .map(
           (p) => `
         <div class="payment-row">
-          <span style="font-weight: 600;">${p.method.replace('CUSTOMER_CREDIT', 'Khata / Credit')}</span>
+          <div>
+            <span style="font-weight: 600;">${p.method.replace('CUSTOMER_CREDIT', 'Khata / Credit')}</span>
+            ${p.reference ? `<div style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 1px;">💳 ${p.reference}</div>` : ''}
+          </div>
           <span style="font-weight: 700;">${formatCurrency(p.amount)}</span>
         </div>
       `
