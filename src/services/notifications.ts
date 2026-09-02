@@ -205,6 +205,37 @@ export async function notifySupplierPaymentDue(supplierId: string, supplierName:
   );
 }
 
+export async function notifyOwnerChequeClearanceRequest(params: {
+  invoiceNumber: string;
+  customerName: string;
+  amount: number;
+  chequeNumber?: string;
+  bankName?: string;
+  dueDate?: string;
+  chequeId?: string;
+  cashierName?: string;
+}) {
+  const { data: owners } = await supabase
+    .from('profiles')
+    .select('id')
+    .in('role', ['OWNER', 'MANAGER']);
+
+  const title = `🚨 Action Required: Clear Cheque for Invoice #${params.invoiceNumber}`;
+  const body = `${params.cashierName || 'Cashier'} submitted cheque details for clearance: Cheque #${params.chequeNumber || 'N/A'} from ${params.customerName} (${params.bankName || 'Bank'}), Amount: Rs. ${Number(params.amount).toLocaleString()}${params.dueDate ? `, Due: ${params.dueDate}` : ''}. Please review and clear.`;
+
+  const recipients = owners && owners.length > 0 ? owners : [{ id: null }];
+  for (const owner of recipients) {
+    await supabase.from('notifications').insert({
+      recipient_id: owner.id,
+      type: 'CHEQUE_RECEIVED',
+      title,
+      body,
+      entity_type: 'cheque',
+      entity_id: params.chequeId || null,
+    });
+  }
+}
+
 // ==================== AUDIT LOGS ====================
 
 export async function fetchAuditLogs(params?: {

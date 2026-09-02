@@ -31,7 +31,7 @@ export async function fetchProducts(params?: {
   const { data, error, count } = await query;
   if (error) throw error;
   const result = { data: data as ProductWithRelations[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
-  return offlineQuery(`products-${page}-${params?.search || ''}`, async () => result);
+  return offlineQuery(`products-${page}-${pageSize}-${params?.category_id || 'all'}-${params?.search || ''}`, async () => result);
 }
 
 export async function fetchProduct(id: string) {

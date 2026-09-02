@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Eye, Trash2, Clock, Banknote, ArrowUpRight, CheckCircle, XCircle, Building2, Calendar, AlertTriangle } from 'lucide-react';
+import { Eye, Trash2, Clock, Banknote, ArrowUpRight, CheckCircle, XCircle, Building2, Calendar, AlertTriangle, Send } from 'lucide-react';
 import { fetchSales, fetchSale, cancelSale, createSalesReturn } from '../../services/sales';
 import { fetchCheques, updateChequeStatus, getChequeMaturityInfo, type Cheque } from '../../services/cheques';
+import { notifyOwnerChequeClearanceRequest } from '../../services/notifications';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
@@ -27,7 +28,8 @@ export function SalesHistoryPage() {
   const networkStatus = useNetworkStatus();
   const isOnline = networkStatus.status === 'ONLINE';
 
-  const canDelete = profile?.role === 'OWNER' || profile?.role === 'MANAGER';
+  const isOwnerOrManager = profile?.role === 'OWNER' || profile?.role === 'MANAGER';
+  const canDelete = isOwnerOrManager;
 
   // Online: fetch from server (refetch when coming back online)
   const { data: onlineData, isLoading: onlineLoading } = useQuery({
@@ -114,6 +116,33 @@ export function SalesHistoryPage() {
       ]);
       toast('success', 'Sale cancelled');
       setDeleteId(null);
+    },
+    onError: (e: Error) => toast('error', e.message),
+  });
+
+  const notifyOwnerMutation = useMutation({
+    mutationFn: async ({ row, linkedCheque }: { row: Record<string, unknown>; linkedCheque?: Cheque }) => {
+      const invoiceNumber = (row.invoice_number as string) || '';
+      let customerName = 'Walk-in';
+      if ('customers' in row && (row.customers as any)?.name) customerName = (row.customers as any).name;
+      else if ('customer_name' in row && row.customer_name) customerName = row.customer_name as string;
+
+      const amount = Number(linkedCheque?.amount || row.net_total || row.total || 0);
+
+      await notifyOwnerChequeClearanceRequest({
+        invoiceNumber,
+        customerName: linkedCheque?.party_name || customerName,
+        amount,
+        chequeNumber: linkedCheque?.cheque_number,
+        bankName: linkedCheque?.bank_name,
+        dueDate: linkedCheque?.due_date,
+        chequeId: linkedCheque?.id,
+        cashierName: profile?.full_name || 'Cashier',
+      });
+    },
+    onSuccess: (_, vars) => {
+      const num = vars.linkedCheque?.cheque_number || (vars.row.invoice_number as string);
+      toast('success', `✓ Sent Cheque ${num} to Store Owner for clearance!`);
     },
     onError: (e: Error) => toast('error', e.message),
   });
@@ -223,12 +252,14 @@ export function SalesHistoryPage() {
                 <XCircle size={11} /> Cheque Bounced
               </span>
               {chequeNum && <span className="text-[10px] text-gray-400 font-mono">{chequeNum}</span>}
-              <button
-                onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
-                className="text-[11px] text-red-600 hover:text-red-800 flex items-center gap-0.5 font-medium underline"
-              >
-                Action Required <ArrowUpRight size={11} />
-              </button>
+              {isOwnerOrManager && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
+                  className="text-[11px] text-red-600 hover:text-red-800 flex items-center gap-0.5 font-medium underline"
+                >
+                  Action Required <ArrowUpRight size={11} />
+                </button>
+              )}
             </div>
           );
         }
@@ -241,12 +272,27 @@ export function SalesHistoryPage() {
             {chequeNum && (
               <span className="text-[10px] text-gray-500 font-mono">{chequeNum}{chequeAmt ? ` · ${chequeAmt}` : ''}</span>
             )}
-            <button
-              onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
-              className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
-            >
-              Clear / Bounce <ArrowUpRight size={11} />
-            </button>
+            {isOwnerOrManager ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); navigate(linkedCheque ? `/cheques?id=${linkedCheque.id}` : '/cheques'); }}
+                className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
+              >
+                Clear / Bounce <ArrowUpRight size={11} />
+              </button>
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  notifyOwnerMutation.mutate({ row, linkedCheque });
+                }}
+                disabled={notifyOwnerMutation.isPending}
+                title="Send cheque details to Store Owner so they can clear it"
+                className="text-[11px] text-amber-900 hover:text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2 py-0.5 rounded flex items-center gap-1 font-semibold transition-colors mt-0.5"
+              >
+                <Send size={10} />
+                {notifyOwnerMutation.isPending ? 'Sending...' : 'Send to Owner'}
+              </button>
+            )}
           </div>
         );
       }
@@ -337,6 +383,8 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { profile } = useAuth();
+  const isOwnerOrManager = profile?.role === 'OWNER' || profile?.role === 'MANAGER';
 
   const { data: sale } = useQuery({ queryKey: ['sale', id], queryFn: () => fetchSale(id), enabled: !isOffline });
 
@@ -638,6 +686,29 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
     onError: (e: Error) => toast('error', e.message),
   });
 
+  const notifyOwnerSaleMutation = useMutation({
+    mutationFn: async () => {
+      const invoiceNumber = sale.invoice_number;
+      const customerName = (sale.customers as any)?.name || 'Walk-in Customer';
+      const amount = Number(linkedCheque?.amount || sale.total || 0);
+
+      await notifyOwnerChequeClearanceRequest({
+        invoiceNumber,
+        customerName: linkedCheque?.party_name || customerName,
+        amount,
+        chequeNumber: linkedCheque?.cheque_number,
+        bankName: linkedCheque?.bank_name,
+        dueDate: linkedCheque?.due_date,
+        chequeId: linkedCheque?.id,
+        cashierName: profile?.full_name || 'Cashier',
+      });
+    },
+    onSuccess: () => {
+      toast('success', `✓ Cheque details for Invoice #${sale.invoice_number} sent to Store Owner to clear.`);
+    },
+    onError: (e: Error) => toast('error', e.message),
+  });
+
   return (
     <Modal isOpen={true} onClose={onClose} title={`Invoice: ${sale.invoice_number}`} size="lg">
       <div className="space-y-4 text-sm">
@@ -732,8 +803,8 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
                 </div>
               )}
 
-              {/* Action buttons — only for owner/manager on PENDING cheques */}
-              {canAct && (
+              {/* Action buttons — for owner/manager: Clear / Bounce */}
+              {canAct && isOwnerOrManager && (
                 <div className="flex items-center gap-2 pt-1">
                   <button
                     disabled={isBusy}
@@ -750,6 +821,20 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
                   >
                     <XCircle size={13} />
                     {bounceMutation.isPending ? 'Saving…' : 'Mark as Bounced'}
+                  </button>
+                </div>
+              )}
+
+              {/* Action button — for cashier: send to owner */}
+              {canAct && !isOwnerOrManager && (
+                <div className="pt-1">
+                  <button
+                    disabled={notifyOwnerSaleMutation.isPending}
+                    onClick={() => notifyOwnerSaleMutation.mutate()}
+                    className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold py-2 transition-colors shadow-sm"
+                  >
+                    <Send size={13} />
+                    {notifyOwnerSaleMutation.isPending ? 'Sending to Owner...' : 'Send Cheque to Store Owner for Clearance'}
                   </button>
                 </div>
               )}

@@ -224,11 +224,10 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Declare state FIRST before using in queries
   const [supplierId, setSupplierId] = useState('');
   const [notes, setNotes] = useState('');
   const [purchaseOrderId, setPurchaseOrderId] = useState('');
-  const hasAutofilledRef = useRef<string>(''); // tracks which PO was last autofilled
+  const [isLoadingPO, setIsLoadingPO] = useState(false);
   const [items, setItems] = useState<
     { product_id: string; quantity: number; unit_cost: number; batch_number: string; expiry_date: string }[]
   >([{ product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
@@ -238,65 +237,74 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
     queryFn: () => fetchSuppliers({}).then((r) => r.data),
   });
 
-  const { data: productsData } = useQuery({
-    queryKey: ['products-all'],
-    queryFn: () => fetchProducts({ pageSize: 500 }).then((r) => r.data),
-  });
-
-  const { data: pendingPOs = [] } = useQuery({
-    queryKey: ['purchase-orders-pending'],
+  // Fetch all products directly from Supabase for complete dropdown coverage
+  const { data: productsData = [] } = useQuery({
+    queryKey: ['products-all-for-goods-receipt'],
     queryFn: async () => {
-      const result = await fetchPurchaseOrders({ status: 'PENDING', pageSize: 100 });
-      return result.data || [];
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, sku, purchase_price')
+        .order('name');
+      if (error) throw error;
+      return data || [];
     },
   });
 
-  // Fetch full PO details with items when needed
-  const { data: fullPO } = useQuery({
-    queryKey: ['purchase-order-full', purchaseOrderId],
-    queryFn: () => (purchaseOrderId ? fetchPurchaseOrder(purchaseOrderId) : null),
-    enabled: !!purchaseOrderId,
+  // Fetch all active POs (Pending, Draft, Partially Received) directly
+  const { data: pendingPOs = [] } = useQuery({
+    queryKey: ['purchase-orders-open-for-receipt'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('purchase_orders')
+        .select('id, order_number, supplier_id, status, total, suppliers(name)')
+        .not('status', 'in', '("RECEIVED","CANCELLED")')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return data || [];
+    },
   });
 
-  // Reset autofill guard whenever the user picks a different PO
-  useEffect(() => {
-    hasAutofilledRef.current = '';
-  }, [purchaseOrderId]);
+  // Instant direct PO autofill handler on select
+  const handlePOSelect = async (selectedPoId: string) => {
+    setPurchaseOrderId(selectedPoId);
+    if (!selectedPoId) return;
 
-  // Auto-fill items when a full PO is loaded.
-  // NOTE: `toast` is intentionally excluded from deps — it changes reference every render
-  // and would cause this effect to re-run in an infinite loop, wiping user edits.
-  useEffect(() => {
-    if (!fullPO || !purchaseOrderId) return;
-    // Only autofill once per PO selection
-    if (hasAutofilledRef.current === purchaseOrderId) return;
+    setIsLoadingPO(true);
+    try {
+      const poData = await fetchPurchaseOrder(selectedPoId);
+      if (!poData) {
+        toast('error', 'Purchase order not found');
+        return;
+      }
 
-    const poItems = fullPO.purchase_order_items;
-    if (!poItems || poItems.length === 0) return;
+      // 1. Autofill Supplier
+      if (poData.supplier_id) {
+        setSupplierId(poData.supplier_id);
+      }
 
-    // Set supplier from PO
-    if (fullPO.supplier_id) {
-      setSupplierId(fullPO.supplier_id);
+      // 2. Autofill Items with Product, Qty, Unit Cost
+      const poItems = poData.purchase_order_items || [];
+      if (poItems.length > 0) {
+        const filledItems = poItems.map((item: any) => ({
+          product_id: item.product_id,
+          quantity: Math.max(1, Number(item.quantity) - Number(item.received_quantity || 0)),
+          unit_cost: Number(item.unit_cost) || 0,
+          batch_number: '',
+          expiry_date: '',
+        }));
+
+        setItems(filledItems);
+        toast('success', `✓ Auto-filled ${filledItems.length} item(s) from PO ${poData.order_number}`);
+      } else {
+        toast('info', `PO ${poData.order_number} has no line items.`);
+      }
+    } catch (err: any) {
+      console.error('[GoodsReceiptForm] Error autofilling PO:', err);
+      toast('error', `Failed to load PO items: ${err.message}`);
+    } finally {
+      setIsLoadingPO(false);
     }
-
-    // Map remaining (unreceived) quantities
-    const filledItems = poItems
-      .map((item: any) => ({
-        product_id: item.product_id,
-        quantity: Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0)),
-        unit_cost: Number(item.unit_cost),
-        batch_number: '',
-        expiry_date: '',
-      }))
-      .filter((i: any) => i.quantity > 0);
-
-    if (filledItems.length > 0) {
-      setItems(filledItems);
-      hasAutofilledRef.current = purchaseOrderId; // mark done so re-renders don't overwrite edits
-      toast('success', `Auto-filled ${filledItems.length} item${filledItems.length !== 1 ? 's' : ''} from Purchase Order`);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullPO, purchaseOrderId]);
+  };
 
   const addItem = () =>
     setItems([...items, { product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
@@ -369,18 +377,26 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
         {/* Link to Purchase Order */}
         <div>
           <label className="label">Purchase Order (optional)</label>
-          <select
-            value={purchaseOrderId}
-            onChange={(e) => setPurchaseOrderId(e.target.value)}
-            className="select-field"
-          >
-            <option value="">Select a PO to auto-fill items</option>
-            {pendingPOs.map((po) => (
-              <option key={(po as any).id} value={(po as any).id}>
-                {(po as any).order_number} • {(po as any).suppliers?.name} • {formatCurrency(Number((po as any).total))}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <select
+              value={purchaseOrderId}
+              onChange={(e) => handlePOSelect(e.target.value)}
+              disabled={isLoadingPO}
+              className="select-field"
+            >
+              <option value="">Select a PO to auto-fill items</option>
+              {pendingPOs.map((po) => (
+                <option key={(po as any).id} value={(po as any).id}>
+                  {(po as any).order_number} • {(po as any).suppliers?.name || 'No Supplier'} • {formatCurrency(Number((po as any).total))} [{(po as any).status}]
+                </option>
+              ))}
+            </select>
+            {isLoadingPO && (
+              <span className="absolute right-8 top-1/2 -translate-y-1/2 text-xs text-blue-600 font-medium animate-pulse">
+                Loading PO...
+              </span>
+            )}
+          </div>
         </div>
 
         <div>
@@ -422,17 +438,24 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
               </thead>
               <tbody>
                 {items.map((item, idx) => {
-                  const isAutoFilled = purchaseOrderId && item.unit_cost > 0 && item.quantity > 0;
+                  const isAutoFilled = Boolean(purchaseOrderId && item.unit_cost > 0 && item.quantity > 0);
                   return (
-                    <tr key={idx} className={`border-b hover:bg-gray-50 ${isAutoFilled ? 'bg-blue-50' : ''}`}>
+                    <tr key={idx} className={`border-b hover:bg-gray-50 ${isAutoFilled ? 'bg-blue-50/50' : ''}`}>
                       <td className="py-2 px-3">
                         <select
                           value={item.product_id}
-                          onChange={(e) => updateItem(idx, 'product_id', e.target.value)}
+                          onChange={(e) => {
+                            const prodId = e.target.value;
+                            const prod = productsData.find((p: any) => p.id === prodId);
+                            updateItem(idx, 'product_id', prodId);
+                            if (prod && !item.unit_cost) {
+                              updateItem(idx, 'unit_cost', Number(prod.purchase_price) || 0);
+                            }
+                          }}
                           className="select-field text-sm"
                         >
                           <option value="">Select product</option>
-                          {productsData?.map((p: { id: string; name: string }) => (
+                          {productsData.map((p: { id: string; name: string }) => (
                             <option key={p.id} value={p.id}>
                               {p.name}
                             </option>
@@ -453,7 +476,7 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
                           type="number"
                           value={item.unit_cost}
                           onChange={(e) => updateItem(idx, 'unit_cost', Number(e.target.value))}
-                          className={`input-field w-28 text-sm text-right ${isAutoFilled ? 'bg-blue-100 border-blue-300' : ''}`}
+                          className={`input-field w-28 text-sm text-right ${isAutoFilled ? 'bg-blue-100/60 border-blue-300 font-semibold' : ''}`}
                           min="0"
                           step="0.01"
                         />

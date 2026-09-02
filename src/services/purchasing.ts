@@ -29,7 +29,7 @@ export async function fetchPurchaseOrders(params?: {
   const { data, error, count } = await query;
   if (error) throw error;
   const result = { data: data as (PurchaseOrder & { suppliers: { name: string; company: string | null } })[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
-  return offlineQuery(`purchase-orders-${page}`, async () => result);
+  return offlineQuery(`purchase-orders-${page}-${pageSize}-${params?.status || 'all'}-${params?.supplier_id || 'all'}`, async () => result);
 }
 
 export async function fetchPurchaseOrder(id: string) {
@@ -42,33 +42,34 @@ export async function fetchPurchaseOrder(id: string) {
   
   if (poError) throw poError;
 
-  // Fetch supplier and items in parallel
-  const [
-    { data: supplier },
-    { data: items }
-  ] = await Promise.all([
-    supabase.from('suppliers').select('*').eq('id', po.supplier_id).single(),
+  // Fetch supplier and items safely
+  const [supplierRes, itemsRes] = await Promise.all([
+    po.supplier_id
+      ? supabase.from('suppliers').select('*').eq('id', po.supplier_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
     supabase.from('purchase_order_items').select('*').eq('purchase_order_id', id)
   ]);
 
+  const items = itemsRes.data || [];
+  const supplier = supplierRes.data || null;
+
   // Batch fetch products for all items
-  const productIds = [...new Set((items || []).map((i) => i.product_id))];
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, name, sku')
-    .in('id', productIds);
-  
-  const prodMap = new Map((products || []).map((p) => [p.id, p]));
+  const productIds = [...new Set(items.map((i: any) => i.product_id).filter(Boolean))];
+  let prodMap = new Map();
+  if (productIds.length > 0) {
+    const { data: products } = await supabase
+      .from('products')
+      .select('id, name, sku, purchase_price, selling_price')
+      .in('id', productIds);
+    prodMap = new Map((products || []).map((p) => [p.id, p]));
+  }
 
   // Enrich items with product data
-  const enrichedItems = (items || []).map((item) => ({
+  const enrichedItems = items.map((item: any) => ({
     ...item,
-    products: prodMap.get(item.product_id) || { id: item.product_id, name: 'Unknown', sku: '' }
+    products: prodMap.get(item.product_id) || { id: item.product_id, name: 'Unknown Product', sku: '' }
   }));
 
-  console.log('[fetchPurchaseOrder] Fetched PO:', po);
-  console.log('[fetchPurchaseOrder] Items:', enrichedItems);
-  
   return {
     ...po,
     suppliers: supplier,
