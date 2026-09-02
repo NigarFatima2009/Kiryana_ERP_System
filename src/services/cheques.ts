@@ -163,11 +163,16 @@ export async function fetchCheques(params?: {
 }
 
 /**
- * Create a new cheque record (Received from customer or Issued to supplier)
- * Automatically notifies Store Owner & Manager to track in Cheque Management
+ * Create a new cheque record (Received from customer or Issued to supplier).
+ * ALWAYS writes directly to Supabase — cheques are live financial records that the
+ * owner must see instantly. They are never buffered in IndexedDB.
+ * Automatically notifies Store Owner & Manager.
  */
 export async function createCheque(data: Omit<Cheque, 'id' | 'created_at'>): Promise<Cheque> {
-  const db = getOfflineDB();
+  if (!navigator.onLine) {
+    throw new Error('Cheque cannot be recorded offline. Please reconnect and try again.');
+  }
+
   const id = generateId();
   const now = new Date().toISOString();
 
@@ -181,55 +186,43 @@ export async function createCheque(data: Omit<Cheque, 'id' | 'created_at'>): Pro
     id,
     created_at: now,
     updated_at: now,
-    synced: false,
+    synced: true, // always starts synced — it goes straight to server
   };
 
-  await db.cheques.put(newCheque);
+  // Write to Supabase first — this is the source of truth
+  const { error: insertError } = await supabase.from('cheques').insert(newCheque);
+  if (insertError) throw new Error(`Failed to record cheque: ${insertError.message}`);
 
-  if (navigator.onLine) {
-    try {
-      await supabase.from('cheques').insert(newCheque);
-      newCheque.synced = true;
-      await db.cheques.put(newCheque);
+  // Also cache locally so ChequesPage works offline later
+  try {
+    const db = getOfflineDB();
+    await db.cheques.put(newCheque);
+  } catch { /* IndexedDB unavailable is non-fatal */ }
 
-      // NOTIFY OWNER & MANAGERS
-      try {
-        const title = data.type === 'RECEIVED'
-          ? `📜 Cheque Received: ${data.cheque_number} (Rs. ${Number(data.amount).toLocaleString()})`
-          : `📜 Cheque Issued: ${data.cheque_number} (Rs. ${Number(data.amount).toLocaleString()})`;
+  // Notify Owner & Managers live
+  try {
+    const title = data.type === 'RECEIVED'
+      ? `📜 Cheque Received: ${data.cheque_number} (Rs. ${Number(data.amount).toLocaleString()})`
+      : `📜 Cheque Issued: ${data.cheque_number} (Rs. ${Number(data.amount).toLocaleString()})`;
 
-        const body = data.type === 'RECEIVED'
-          ? `Received from ${data.party_name} via ${data.bank_name}. Due date: ${data.due_date}. Please clear in Cheque Management when banked.`
-          : `Issued to ${data.party_name} via ${data.bank_name}. Due date: ${data.due_date}.`;
+    const body = data.type === 'RECEIVED'
+      ? `Received from ${data.party_name} via ${data.bank_name}. Due: ${data.due_date}. Please clear in Cheque Management when banked.`
+      : `Issued to ${data.party_name} via ${data.bank_name}. Due: ${data.due_date}.`;
 
-        const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
-        if (owners && owners.length > 0) {
-          for (const owner of owners) {
-            await supabase.from('notifications').insert({
-              recipient_id: owner.id,
-              type: 'CHEQUE_RECEIVED',
-              title,
-              body,
-              entity_type: 'cheque',
-              entity_id: id,
-            });
-          }
-        } else {
-          await supabase.from('notifications').insert({
-            recipient_id: null,
-            type: 'CHEQUE_RECEIVED',
-            title,
-            body,
-            entity_type: 'cheque',
-            entity_id: id,
-          });
-        }
-      } catch (notifErr) {
-        console.warn('[Cheques] Notification sending skipped:', notifErr);
-      }
-    } catch (e) {
-      console.warn('[Cheques] Remote insert skipped:', e);
+    const { data: owners } = await supabase.from('profiles').select('id').in('role', ['OWNER', 'MANAGER']);
+    const recipients = owners && owners.length > 0 ? owners : [{ id: null }];
+    for (const owner of recipients) {
+      await supabase.from('notifications').insert({
+        recipient_id: owner.id,
+        type: 'CHEQUE_RECEIVED',
+        title,
+        body,
+        entity_type: 'cheque',
+        entity_id: id,
+      });
     }
+  } catch (notifErr) {
+    console.warn('[Cheques] Notification sending skipped:', notifErr);
   }
 
   return newCheque;

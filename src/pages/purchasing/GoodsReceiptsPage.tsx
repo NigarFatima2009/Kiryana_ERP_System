@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Eye, Trash2 } from 'lucide-react';
 import { fetchGoodsReceipts, receiveGoods, fetchGoodsReceipt, fetchPurchaseOrders, fetchPurchaseOrder } from '../../services/purchasing';
@@ -228,6 +228,7 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
   const [supplierId, setSupplierId] = useState('');
   const [notes, setNotes] = useState('');
   const [purchaseOrderId, setPurchaseOrderId] = useState('');
+  const hasAutofilledRef = useRef<string>(''); // tracks which PO was last autofilled
   const [items, setItems] = useState<
     { product_id: string; quantity: number; unit_cost: number; batch_number: string; expiry_date: string }[]
   >([{ product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
@@ -257,70 +258,45 @@ function GoodsReceiptForm({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
     enabled: !!purchaseOrderId,
   });
 
-  // Auto-fill items when a full PO is loaded
+  // Reset autofill guard whenever the user picks a different PO
   useEffect(() => {
-    console.log('[GoodsReceipt Auto-fill] fullPO:', fullPO);
-    console.log('[GoodsReceipt Auto-fill] purchaseOrderId:', purchaseOrderId);
-    
-    if (!fullPO) {
-      console.log('[GoodsReceipt Auto-fill] No fullPO data');
-      return;
-    }
-    
-    if (!purchaseOrderId) {
-      console.log('[GoodsReceipt Auto-fill] No purchaseOrderId');
-      return;
-    }
+    hasAutofilledRef.current = '';
+  }, [purchaseOrderId]);
 
-    // Check if PO has items
+  // Auto-fill items when a full PO is loaded.
+  // NOTE: `toast` is intentionally excluded from deps — it changes reference every render
+  // and would cause this effect to re-run in an infinite loop, wiping user edits.
+  useEffect(() => {
+    if (!fullPO || !purchaseOrderId) return;
+    // Only autofill once per PO selection
+    if (hasAutofilledRef.current === purchaseOrderId) return;
+
     const poItems = fullPO.purchase_order_items;
-    console.log('[GoodsReceipt Auto-fill] purchase_order_items:', poItems);
-    console.log('[GoodsReceipt Auto-fill] items count:', poItems?.length);
-    
-    if (!poItems || poItems.length === 0) {
-      console.log('[GoodsReceipt Auto-fill] No items in PO');
-      return;
-    }
+    if (!poItems || poItems.length === 0) return;
 
-    // Set supplier
+    // Set supplier from PO
     if (fullPO.supplier_id) {
-      console.log('[GoodsReceipt Auto-fill] Setting supplier to:', fullPO.supplier_id);
       setSupplierId(fullPO.supplier_id);
     }
 
-    // Map and filter items
+    // Map remaining (unreceived) quantities
     const filledItems = poItems
-      .map((item: any) => {
-        console.log('[GoodsReceipt Auto-fill] Processing item:', {
-          id: item.id,
-          product_id: item.product_id,
-          quantity: item.quantity,
-          received: item.received_quantity,
-          cost: item.unit_cost
-        });
-        return {
-          product_id: item.product_id,
-          quantity: Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0)),
-          unit_cost: Number(item.unit_cost),
-          batch_number: '',
-          expiry_date: '',
-        };
-      })
-      .filter((i: any) => {
-        console.log('[GoodsReceipt Auto-fill] Filtered item qty:', i.quantity, 'passes:', i.quantity > 0);
-        return i.quantity > 0;
-      });
-
-    console.log('[GoodsReceipt Auto-fill] Final items to fill:', filledItems);
+      .map((item: any) => ({
+        product_id: item.product_id,
+        quantity: Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0)),
+        unit_cost: Number(item.unit_cost),
+        batch_number: '',
+        expiry_date: '',
+      }))
+      .filter((i: any) => i.quantity > 0);
 
     if (filledItems.length > 0) {
-      console.log('[GoodsReceipt Auto-fill] Setting items:', filledItems);
       setItems(filledItems);
-      toast('success', `Auto-filled ${filledItems.length} items from Purchase Order`);
-    } else {
-      console.log('[GoodsReceipt Auto-fill] No items with qty > 0');
+      hasAutofilledRef.current = purchaseOrderId; // mark done so re-renders don't overwrite edits
+      toast('success', `Auto-filled ${filledItems.length} item${filledItems.length !== 1 ? 's' : ''} from Purchase Order`);
     }
-  }, [fullPO, purchaseOrderId, toast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullPO, purchaseOrderId]);
 
   const addItem = () =>
     setItems([...items, { product_id: '', quantity: 1, unit_cost: 0, batch_number: '', expiry_date: '' }]);
