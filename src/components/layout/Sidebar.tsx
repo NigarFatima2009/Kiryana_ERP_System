@@ -9,6 +9,7 @@ import {
   ScrollText, LogOut, PanelLeftClose, PanelLeftOpen, Lock,
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
+import { supabase } from '../../lib/supabase';
 import { fetchPagePermissions } from '../../services/permissions';
 
 interface NavItem {
@@ -152,10 +153,9 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   });
 
   // Fetch low stock count for badge
-  const { data: lowStockCount = 0 } = useQuery({
+  const { data: lowStockCount = 0 } = useQuery<number>({
     queryKey: ['low-stock-count'],
     queryFn: async () => {
-      const { supabase } = await import('../../lib/supabase');
       const { data: inv } = await supabase.from('inventory').select('product_id, quantity');
       const { data: prods } = await supabase.from('products').select('id, reorder_level').eq('active', true);
       const reorderMap = new Map((prods || []).map((p: any) => [p.id, p.reorder_level]));
@@ -169,10 +169,9 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   });
 
   // Fetch expiring soon count for badge
-  const { data: expiringCount = 0 } = useQuery({
+  const { data: expiringCount = 0 } = useQuery<number>({
     queryKey: ['expiring-count'],
     queryFn: async () => {
-      const { supabase } = await import('../../lib/supabase');
       const today = new Date().toISOString().split('T')[0];
       const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const { count } = await supabase
@@ -336,14 +335,14 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                           }`}
                         >
                           {item.label}
-                          {item.path === '/stock' && lowStockCount > 0 && (
+                          {item.path === '/stock' && Number(lowStockCount) > 0 && (
                             <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold">
-                              {lowStockCount}
+                              {String(lowStockCount)}
                             </span>
                           )}
-                          {item.path === '/batches' && expiringCount > 0 && (
+                          {item.path === '/batches' && Number(expiringCount) > 0 && (
                             <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-orange-500 text-white text-[10px] font-bold">
-                              {expiringCount}
+                              {String(expiringCount)}
                             </span>
                           )}
                         </Link>
@@ -368,14 +367,14 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                       }`}
                     >
                       {item.icon}
-                      {item.path === '/stock' && lowStockCount > 0 && (
+                      {item.path === '/stock' && Number(lowStockCount) > 0 && (
                         <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-500 text-white text-[8px] font-bold">
-                          {lowStockCount}
+                          {String(lowStockCount)}
                         </span>
                       )}
-                      {item.path === '/batches' && expiringCount > 0 && (
+                      {item.path === '/batches' && Number(expiringCount) > 0 && (
                         <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[14px] h-[14px] px-0.5 rounded-full bg-orange-500 text-white text-[8px] font-bold">
-                          {expiringCount}
+                          {String(expiringCount)}
                         </span>
                       )}
                     </Link>
