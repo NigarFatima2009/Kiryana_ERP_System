@@ -16,6 +16,7 @@ export function OfflineDataViewer() {
   const [isOpen, setIsOpen] = useState(false);
   const [expanded, setExpanded] = useState<DataSection>('none');
   const [isDragging, setIsDragging] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Refs for drag — no React re-renders during drag
   const positionRef = useRef({ x: window.innerWidth - 76, y: 80 });
@@ -36,8 +37,14 @@ export function OfflineDataViewer() {
 
   const loadData = async () => {
     setLoading(true);
+    setError(null);
     try {
       const db = getOfflineDB();
+      if (!db) {
+        setError('Offline DB not available');
+        setLoading(false);
+        return;
+      }
       const [prods, invs, custs, salesData, shiftsData] = await Promise.all([
         db.products.toArray(),
         db.inventory.toArray(),
@@ -52,6 +59,7 @@ export function OfflineDataViewer() {
       setShifts(shiftsData);
     } catch (error) {
       console.error('[OfflineDataViewer] Failed to load data:', error);
+      setError(error instanceof Error ? error.message : 'Unknown error');
     }
     setLoading(false);
   };

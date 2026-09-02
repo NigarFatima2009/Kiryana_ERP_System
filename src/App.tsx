@@ -201,6 +201,9 @@ function OfflineInitializer() {
 /**
  * Silent background component: triggers sync when connection returns.
  * Renders nothing — no UI visible anywhere.
+ * 
+ * NOTE: Only depends on status.status (string), NOT status.pendingOperationCount
+ * to avoid infinite re-render loops when sync stats update.
  */
 function OfflineSyncManager() {
   const status = useNetworkStatus();
@@ -259,7 +262,7 @@ function OfflineSyncManager() {
     }
 
     void triggerSync();
-  }, [status.status, status.pendingOperationCount]);
+  }, [status.status]);
 
   return null;
 }
