@@ -8,11 +8,11 @@ export const MAX_SHIFT_MINUTES = 15;
 
 /**
  * Check if a shift has exceeded the maximum allowed duration.
- * If so, auto-close it and return true.
- * DISABLED FOR TESTING - we want manual close only
+ * NOTE: Auto-close in background is disabled so cashier shifts are not lost
+ * or prematurely closed while cashier is away or tracking active duty.
  */
-async function autoCloseExpiredShift(shift: CashierShift): Promise<boolean> {
-  // DISABLED: Auto-closing disabled during testing
+async function autoCloseExpiredShift(_shift: CashierShift): Promise<boolean> {
+  // Do not prematurely auto-close shifts in background
   return false;
 }
 

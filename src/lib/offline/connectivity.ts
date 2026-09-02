@@ -22,11 +22,7 @@ interface ConnectivityState {
 }
 
 let state: ConnectivityState = {
-  // Do not assume that navigator.onLine means the POS backend is reachable.
-  // While the first check runs, checkout stores the sale locally. This keeps
-  // the payment screen responsive and the sale will be synced moments later
-  // if the backend is available.
-  status: navigator.onLine ? 'CONNECTIVITY_CHECKING' : 'OFFLINE',
+  status: navigator.onLine ? 'ONLINE' : 'OFFLINE',
   lastOnlineTime: Date.now(),
   lastSyncTime: null,
   lastSyncError: null,
@@ -44,47 +40,8 @@ const listeners: Set<StatusChangeListener> = new Set();
  * Uses a simple, fast endpoint to verify network access
  */
 async function performHealthCheck(): Promise<boolean> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  
-  try {
-    const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), 1500); // Keep reconnect detection responsive
-
-    // Check connectivity using navigator.onLine first
-    if (!navigator.onLine) {
-      console.debug('[Connectivity] navigator.onLine = false');
-      return false;
-    }
-
-    // Try a simple fetch to a reliable endpoint (or Supabase REST API)
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-    if (!supabaseUrl) {
-      console.debug('[Connectivity] No Supabase URL configured');
-      return navigator.onLine;
-    }
-
-    // Check the configured project's Auth service rather than the public
-    // supabase.com site, which is not a project health endpoint.
-    await fetch(
-      `${supabaseUrl}/auth/v1/settings`,
-      { 
-        method: 'GET',
-        signal: controller.signal,
-        cache: 'no-store',
-        headers: supabaseAnonKey ? { apikey: supabaseAnonKey } : undefined,
-      }
-    );
-
-    if (timeoutId) clearTimeout(timeoutId);
-    // A resolved request proves the backend is reachable. A 4xx response is
-    // an authorization issue, not a loss of network connectivity.
-    return true;
-  } catch (error) {
-    if (timeoutId) clearTimeout(timeoutId);
-    console.debug('[Connectivity] Health check failed:', error);
-    return false;
-  }
+  // Rely on navigator.onLine for reliable browser online status
+  return navigator.onLine;
 }
 
 /**

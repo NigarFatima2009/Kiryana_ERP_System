@@ -1,36 +1,11 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useAuth } from './lib/auth';
 import { MainLayout } from './components/layout/MainLayout';
 import { LoginPage } from './pages/auth/LoginPage';
 import { ChangePasswordPage } from './pages/auth/ChangePasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
-import { ProductsPage } from './pages/products/ProductsPage';
-import { CategoriesPage } from './pages/products/CategoriesPage';
-import { BrandsPage } from './pages/products/BrandsPage';
-import { StockPage } from './pages/inventory/StockPage';
-import { StockMovementsPage } from './pages/inventory/StockMovementsPage';
-import { BatchesPage } from './pages/inventory/BatchesPage';
-import { ReorderRecommendationsPage } from './pages/inventory/ReorderRecommendationsPage';
-import { SuppliersPage } from './pages/purchasing/SuppliersPage';
-import { PurchaseOrdersPage } from './pages/purchasing/PurchaseOrdersPage';
-import { GoodsReceiptsPage } from './pages/purchasing/GoodsReceiptsPage';
-import { PurchaseReturnsPage } from './pages/purchasing/PurchaseReturnsPage';
-import { CustomersPage } from './pages/customers/CustomersPage';
-import { KhataPage } from './pages/customers/KhataPage';
-import { POSPage } from './pages/sales/POSPage';
-import { SalesHistoryPage } from './pages/sales/SalesHistoryPage';
-import { SalesReturnsPage } from './pages/sales/SalesReturnsPage';
-import { ShiftManagementPage } from './pages/sales/ShiftManagementPage';
-import { PaymentsPage } from './pages/finance/PaymentsPage';
-import { ExpensesPage } from './pages/finance/ExpensesPage';
-import { AccountingPage } from './pages/finance/AccountingPage';
-import { ReportsPage } from './pages/reports/ReportsPage';
-import { EmployeesPage } from './pages/employees/EmployeesPage';
-import { NotificationsPage } from './pages/NotificationsPage';
-import { AuditLogsPage } from './pages/settings/AuditLogsPage';
-import { SettingsPage } from './pages/settings/SettingsPage';
-import { PermissionsPage } from './pages/settings/PermissionsPage';
+import { lazyLoad } from './lib/lazyLoad';
 import { useRealtimeSync } from './hooks/useRealtimeSync';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchPagePermissions } from './services/permissions';
@@ -43,6 +18,35 @@ import { updateSyncStats } from './lib/offline/connectivity';
 import { syncOfflineShifts } from './services/cashier';
 import { useNetworkStatus } from './hooks/useOfflineStatus';
 import type { AppRole } from './types/database';
+
+// Lazy load large pages (>10KB)
+const ProductsPage = lazyLoad(() => import('./pages/products/ProductsPage').then(m => ({ default: m.ProductsPage })));
+const CategoriesPage = lazyLoad(() => import('./pages/products/CategoriesPage').then(m => ({ default: m.CategoriesPage })));
+const BrandsPage = lazyLoad(() => import('./pages/products/BrandsPage').then(m => ({ default: m.BrandsPage })));
+const StockPage = lazyLoad(() => import('./pages/inventory/StockPage').then(m => ({ default: m.StockPage })));
+const StockMovementsPage = lazyLoad(() => import('./pages/inventory/StockMovementsPage').then(m => ({ default: m.StockMovementsPage })));
+const BatchesPage = lazyLoad(() => import('./pages/inventory/BatchesPage').then(m => ({ default: m.BatchesPage })));
+const ReorderRecommendationsPage = lazyLoad(() => import('./pages/inventory/ReorderRecommendationsPage').then(m => ({ default: m.ReorderRecommendationsPage })));
+const SuppliersPage = lazyLoad(() => import('./pages/purchasing/SuppliersPage').then(m => ({ default: m.SuppliersPage })));
+const PurchaseOrdersPage = lazyLoad(() => import('./pages/purchasing/PurchaseOrdersPage').then(m => ({ default: m.PurchaseOrdersPage })));
+const GoodsReceiptsPage = lazyLoad(() => import('./pages/purchasing/GoodsReceiptsPage').then(m => ({ default: m.GoodsReceiptsPage })));
+const PurchaseReturnsPage = lazyLoad(() => import('./pages/purchasing/PurchaseReturnsPage').then(m => ({ default: m.PurchaseReturnsPage })));
+const CustomersPage = lazyLoad(() => import('./pages/customers/CustomersPage').then(m => ({ default: m.CustomersPage })));
+const KhataPage = lazyLoad(() => import('./pages/customers/KhataPage').then(m => ({ default: m.KhataPage })));
+const POSPage = lazyLoad(() => import('./pages/sales/POSPage').then(m => ({ default: m.POSPage })));
+const SalesHistoryPage = lazyLoad(() => import('./pages/sales/SalesHistoryPage').then(m => ({ default: m.SalesHistoryPage })));
+const SalesReturnsPage = lazyLoad(() => import('./pages/sales/SalesReturnsPage').then(m => ({ default: m.SalesReturnsPage })));
+const ShiftManagementPage = lazyLoad(() => import('./pages/sales/ShiftManagementPage').then(m => ({ default: m.ShiftManagementPage })));
+const PaymentsPage = lazyLoad(() => import('./pages/finance/PaymentsPage').then(m => ({ default: m.PaymentsPage })));
+const ExpensesPage = lazyLoad(() => import('./pages/finance/ExpensesPage').then(m => ({ default: m.ExpensesPage })));
+const AccountingPage = lazyLoad(() => import('./pages/finance/AccountingPage').then(m => ({ default: m.AccountingPage })));
+const ChequesPage = lazyLoad(() => import('./pages/finance/ChequesPage').then(m => ({ default: m.ChequesPage })));
+const ReportsPage = lazyLoad(() => import('./pages/reports/ReportsPage').then(m => ({ default: m.ReportsPage })));
+const EmployeesPage = lazyLoad(() => import('./pages/employees/EmployeesPage').then(m => ({ default: m.EmployeesPage })));
+const NotificationsPage = lazyLoad(() => import('./pages/NotificationsPage').then(m => ({ default: m.NotificationsPage })));
+const AuditLogsPage = lazyLoad(() => import('./pages/settings/AuditLogsPage').then(m => ({ default: m.AuditLogsPage })));
+const SettingsPage = lazyLoad(() => import('./pages/settings/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const PermissionsPage = lazyLoad(() => import('./pages/settings/PermissionsPage').then(m => ({ default: m.PermissionsPage })));
 
 function ProtectedLayout() {
   const { session, profile, loading } = useAuth();
@@ -157,7 +161,10 @@ function RoleGuard({ children, allowedRoles, pagePath }: { children: React.React
  * Silent background component: initializes IndexedDB and caches POS data on login.
  * Renders nothing — no UI visible anywhere.
  */
+import { useGlobalShiftTracker } from './hooks/useShiftPresence';
+
 function OfflineInitializer() {
+  useGlobalShiftTracker();
   const { user, session } = useAuth();
   const [initialized, setInitialized] = useState(false);
 
@@ -313,6 +320,7 @@ export default function App() {
           <Route path="customers" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/customers"><CustomersPage /></RoleGuard>} />
           <Route path="khata" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/khata"><KhataPage /></RoleGuard>} />
           <Route path="payments" element={<RoleGuard allowedRoles={['OWNER']}><PaymentsPage /></RoleGuard>} />
+          <Route path="cheques" element={<RoleGuard allowedRoles={['OWNER', 'MANAGER']}><ChequesPage /></RoleGuard>} />
           <Route path="expenses" element={<RoleGuard allowedRoles={['OWNER', 'ACCOUNTANT', 'MANAGER']}><ExpensesPage /></RoleGuard>} />
           <Route path="accounting" element={<RoleGuard allowedRoles={['OWNER']}><AccountingPage /></RoleGuard>} />
           <Route path="reports" element={<RoleGuard allowedRoles={['OWNER', 'CASHIER']} pagePath="/reports"><ReportsPage /></RoleGuard>} />

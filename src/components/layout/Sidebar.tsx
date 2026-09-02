@@ -95,6 +95,7 @@ const navigation: NavGroup[] = [
     icon: <CircleDollarSign size={20} />,
     items: [
       { label: 'Payments', path: '/payments', icon: <HandCoins size={18} /> },
+      { label: 'Cheques', path: '/cheques', icon: <Banknote size={18} /> },
       { label: 'Expenses', path: '/expenses', icon: <Banknote size={18} /> },
       { label: 'Accounting', path: '/accounting', icon: <ScrollText size={18} /> },
     ],

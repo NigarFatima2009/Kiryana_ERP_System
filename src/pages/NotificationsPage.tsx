@@ -1,14 +1,17 @@
-import { Bell, Check } from 'lucide-react';
+import { Bell, Check, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useNotifications, useMarkNotificationRead } from '../hooks/useNotifications';
 import { formatDateTime } from '../utils/helpers';
 
 export function NotificationsPage() {
+  const navigate = useNavigate();
   const { notifications, isLoading } = useNotifications();
   const markRead = useMarkNotificationRead();
 
   const typeIcons: Record<string, string> = {
     LOW_STOCK: '📦', EXPIRED: '⏰', EXPIRING_SOON: '⏰',
     CREDIT_LIMIT: '💳', PAYMENT_DUE: '💰', LARGE_EXPENSE: '💸',
+    CHEQUE_RECEIVED: '📜', CHEQUE_CLEARED: '✓', CHEQUE_BOUNCED: '✕',
   };
 
   return (
@@ -32,6 +35,14 @@ export function NotificationsPage() {
                   <p className={`text-sm ${n.read_at ? '' : 'font-medium'}`}>{n.title}</p>
                   {n.body && <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>}
                   <p className="text-xs text-gray-400 mt-1">{formatDateTime(n.created_at)}</p>
+                  {n.type?.includes('CHEQUE') && (
+                    <button
+                      onClick={() => navigate('/cheques')}
+                      className="text-xs text-blue-600 hover:text-blue-800 font-semibold mt-1 flex items-center gap-1"
+                    >
+                      Open Cheque Management <ArrowRight size={12} />
+                    </button>
+                  )}
                 </div>
                 {!n.read_at && (
                   <button onClick={() => markRead.mutate(n.id)} className="rounded p-1 text-gray-400 hover:bg-white hover:text-green-600" title="Mark as read">

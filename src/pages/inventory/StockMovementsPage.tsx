@@ -5,6 +5,7 @@ import { fetchStockMovements } from '../../services/inventory';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { formatDateTime, formatCurrency } from '../../utils/helpers';
 import { getOfflineDB } from '../../lib/offline/db';
 import { getAllCachedProducts } from '../../lib/offline/cache';
@@ -197,6 +198,8 @@ function StockMovementDetail({ id, onClose, isOnline, movements }: { id: string;
   const product = movement.products as { name: string; sku: string; active?: boolean } | null;
   const profile = (movement.profiles as { full_name: string; email: string } | null) || null;
   const qty = Math.abs(Number(movement.quantity_change || 0));
+  const unitCost = Number(movement.unit_cost || 0);
+  const totalValue = qty * unitCost;
   const cashierName = profile?.full_name || 'System';
   const isIncrease = Number(movement.quantity_change || 0) > 0;
 
@@ -229,6 +232,27 @@ function StockMovementDetail({ id, onClose, isOnline, movements }: { id: string;
   return (
     <Modal isOpen={true} onClose={onClose} title="Movement Details" size="md">
       <div className="space-y-4">
+        {/* Export Buttons */}
+        <div className="flex justify-end">
+          <ExportButtons
+            variant="secondary"
+            filename={`StockMovement_${movementType}`}
+            title={`Stock Movement - ${movementType}`}
+            data={{
+              'Movement Type': movementType,
+              'Product': product?.name || 'Unknown',
+              'SKU': product?.sku || '-',
+              'Quantity Change': `${isIncrease ? '+' : '-'}${qty}`,
+              'Unit Cost (PKR)': unitCost.toFixed(2),
+              'Total Amount (PKR)': totalValue.toFixed(2),
+              'Date & Time': timestampStr,
+              'Recorded By': cashierName,
+              'Reference Type': refType,
+              'Reference ID': String(movement.reference_id || '-'),
+            }}
+          />
+        </div>
+
         {/* Main Action */}
         <div className={`rounded-lg p-4 ${isIncrease ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
           <h3 className="font-bold text-slate-900 text-base">{description}</h3>
@@ -261,15 +285,21 @@ function StockMovementDetail({ id, onClose, isOnline, movements }: { id: string;
           <p className="font-mono text-sm text-slate-900 break-all">{String(movement.reference_id || '-')}</p>
         </div>
 
-        {/* Details Row */}
-        <div className="grid grid-cols-2 gap-3 text-sm">
+        {/* Details Row: Product, Unit Cost & Total Value */}
+        <div className="grid grid-cols-3 gap-3 text-sm bg-slate-50 p-3 rounded-lg border border-slate-200">
           <div>
-            <p className="text-xs text-slate-600">Product</p>
-            <p className="font-medium text-slate-900">{product?.name || 'Unknown'}</p>
+            <p className="text-xs text-slate-500 font-medium uppercase">Product</p>
+            <p className="font-semibold text-slate-900 mt-0.5">{product?.name || 'Unknown'}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-600">Cost</p>
-            <p className="font-medium text-slate-900">{String(formatCurrency(Number(movement.unit_cost || 0)))}</p>
+            <p className="text-xs text-slate-500 font-medium uppercase">Unit Cost</p>
+            <p className="font-semibold text-slate-900 mt-0.5">{String(formatCurrency(unitCost))}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium uppercase">Total Amount</p>
+            <p className={`font-bold mt-0.5 ${movementType.includes('RETURN') ? 'text-blue-700' : 'text-slate-900'}`}>
+              {String(formatCurrency(totalValue))}
+            </p>
           </div>
         </div>
 

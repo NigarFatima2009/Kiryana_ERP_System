@@ -1,7 +1,9 @@
-import { Bell, Search, Menu } from 'lucide-react';
+import { Bell, Search, Menu, Banknote } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../lib/auth';
 import { useNotifications } from '../../hooks/useNotifications';
+import { getChequesSummary } from '../../services/cheques';
 
 interface HeaderProps {
   onMenuToggle: () => void;
@@ -10,6 +12,18 @@ interface HeaderProps {
 export function Header({ onMenuToggle }: HeaderProps) {
   const { profile } = useAuth();
   const { unreadCount } = useNotifications();
+  const isOwnerOrManager = profile?.role === 'OWNER' || profile?.role === 'MANAGER';
+
+  const { data: chequesSummary } = useQuery({
+    queryKey: ['cheques-summary'],
+    queryFn: getChequesSummary,
+    enabled: isOwnerOrManager,
+    refetchInterval: 15000,
+  });
+
+  const hasPendingCheques = Boolean(
+    chequesSummary && (chequesSummary.pendingReceivedAmount > 0 || chequesSummary.overdueCount > 0)
+  );
 
   return (
     <header className="flex h-14 items-center justify-between border-b border-gray-200 bg-white px-6">
@@ -30,6 +44,21 @@ export function Header({ onMenuToggle }: HeaderProps) {
         </div>
       </div>
       <div className="flex items-center gap-3">
+        {isOwnerOrManager && hasPendingCheques && (
+          <Link
+            to="/cheques"
+            title="Manage Pending Cheques"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
+          >
+            <Banknote size={14} className="text-amber-600" />
+            <span>
+              {chequesSummary!.overdueCount > 0
+                ? `⚠️ ${chequesSummary!.overdueCount} Overdue Cheque${chequesSummary!.overdueCount > 1 ? 's' : ''}`
+                : `📜 Pending Cheques`}
+            </span>
+          </Link>
+        )}
+
         <Link
           to="/notifications"
           className="relative rounded-lg p-2 text-gray-500 hover:bg-gray-100"

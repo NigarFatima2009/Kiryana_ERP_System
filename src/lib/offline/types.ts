@@ -317,3 +317,33 @@ export interface OfflineDiagnostics {
   lastSyncError: string | null;
   syncStatus: ConnectivityStatus;
 }
+
+// ==================== OFFLINE CHEQUES ====================
+
+export type ChequeType = 'RECEIVED' | 'ISSUED';
+export type ChequeStatus = 'PENDING' | 'CLEARED' | 'BOUNCED' | 'CANCELLED';
+export type ChequePartyType = 'CUSTOMER' | 'SUPPLIER' | 'OTHER';
+
+export interface OfflineCheque {
+  id: string;
+  cheque_number: string;
+  type: ChequeType;
+  party_type: ChequePartyType;
+  party_id?: string | null;
+  party_name: string;
+  bank_name: string;
+  account_number?: string | null;
+  drawer_title?: string | null;
+  amount: number;
+  issue_date: string;
+  due_date: string;
+  status: ChequeStatus;
+  cleared_at?: string | null;
+  notes?: string | null;
+  reference_sale_id?: string | null;
+  reference_purchase_order_id?: string | null;
+  created_at: string;
+  updated_at?: string;
+  synced?: boolean;
+}
+

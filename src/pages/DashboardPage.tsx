@@ -14,7 +14,8 @@ import {
 } from '../services/dashboard';
 import { useAuth } from '../lib/auth';
 import { formatCurrency } from '../utils/helpers';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Banknote } from 'lucide-react';
+import { getChequesSummary } from '../services/cheques';
 
 const COLORS = ['#475569', '#1d4ed8', '#b45309', '#15803d', '#9333ea', '#be123c'];
 
@@ -307,6 +308,12 @@ function OwnerDashboard() {
     refetchInterval: 300_000, // Increased from 30s to 5 minutes - expiring items don't change that often
   });
 
+  const { data: chequesSummary } = useQuery({
+    queryKey: ['cheques-summary'],
+    queryFn: () => getChequesSummary(),
+    staleTime: 30_000,
+  });
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -317,7 +324,44 @@ function OwnerDashboard() {
 
   return (
     <div className="space-y-6 max-w-7xl">
-      <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-gray-900">Dashboard</h1>
+        {chequesSummary && (chequesSummary.pendingReceivedAmount > 0 || chequesSummary.overdueCount > 0) && (
+          <button
+            onClick={() => navigate('/cheques')}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
+          >
+            <Banknote size={14} className="text-amber-600" />
+            <span>{chequesSummary.overdueCount > 0 ? `⚠️ ${chequesSummary.overdueCount} Overdue Cheques` : `📜 ${formatCurrency(chequesSummary.pendingReceivedAmount)} in Cheques`}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Cheque Clearance Alert for Owner */}
+      {chequesSummary && (chequesSummary.pendingReceivedAmount > 0 || chequesSummary.overdueCount > 0) && (
+        <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between flex-wrap gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg p-2.5 bg-amber-100 text-amber-800">
+              <Banknote size={24} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-amber-950">
+                Cheques Pending Clearance: {formatCurrency(chequesSummary.pendingReceivedAmount)}
+              </h3>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Received from customers via POS cashiers • {chequesSummary.dueWithin15DaysCount} maturing within 15 days
+                {chequesSummary.overdueCount > 0 && ` • ⚠️ ${chequesSummary.overdueCount} OVERDUE`}.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate('/cheques')}
+            className="btn-primary text-xs py-2 px-4 bg-amber-700 hover:bg-amber-800 border-none text-white font-semibold flex items-center gap-1.5"
+          >
+            Manage Cheques →
+          </button>
+        </div>
+      )}
 
       {/* Trend Period Selector */}
       <div className="flex gap-2">

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { CreditCard, Search, DollarSign, BookOpen, Download } from 'lucide-react';
+import { CreditCard, Search, DollarSign, BookOpen } from 'lucide-react';
 import { fetchCustomers, fetchCustomerTransactions, fetchCustomerBalance, receiveCustomerPayment } from '../../services/customers';
 import { Modal } from '../../components/ui/Modal';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { useToast } from '../../components/ui/Toast';
 import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatDateTime } from '../../utils/helpers';
@@ -114,53 +115,36 @@ export function KhataPage() {
     return { ...t, running: runningBalance };
   }).reverse();
 
-  // CSV export function
-  const exportToCSV = () => {
-    if (!selectedCustomerData || !ledgerWithBalance) return;
-
-    const headers = ['Date', 'Type', 'Amount', 'Balance', 'Narration'];
-    const rows = ledgerWithBalance.map((t) => [
-      new Date(t.created_at).toLocaleDateString('en-US'),
-      t.transaction_type,
-      formatCurrency(Number(t.amount)),
-      formatCurrency(Number(t.running)),
-      t.narration || '-',
-    ]);
-
-    // Combine headers and rows
-    const csvContent = [
-      ['Customer Ledger Export'],
-      ['Customer:', selectedCustomerData.name],
-      ['Export Date:', new Date().toLocaleString('en-US')],
-      [''],
-      [headers.join(',')],
-      ...rows,
-      [''],
-      ['Final Balance:', formatCurrency(balance || 0)],
-    ].map((row: any) => (Array.isArray(row) ? row.join(',') : row)).join('\n');
-
-    // Create blob and download
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `khata_${selectedCustomerData.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+  // CSV export data preparation
+  const exportTableData = selectedCustomerData && ledgerWithBalance
+    ? {
+        headers: ['Date', 'Type', 'Amount', 'Balance', 'Narration'],
+        rows: ledgerWithBalance.map((t) => [
+          new Date(t.created_at).toLocaleDateString('en-US'),
+          t.transaction_type.replace('_', ' '),
+          Number(t.amount),
+          Number(t.running),
+          t.narration || (t.invoice_number ? `Invoice: ${t.invoice_number}` : '-'),
+        ]),
+        totals: {
+          'Final Balance': balance || 0,
+        },
+      }
+    : undefined;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Customer Khata</h1>
         <div className="flex gap-2">
-          {selectedCustomer && (
+          {selectedCustomer && exportTableData && (
             <>
-              <button onClick={exportToCSV} className="btn-secondary">
-                <Download className="mr-2 h-4 w-4" /> Export CSV
-              </button>
+              <ExportButtons
+                variant="secondary"
+                filename={`Khata_${selectedCustomerData?.name || 'Customer'}`}
+                title={`Customer Ledger - ${selectedCustomerData?.name || ''}`}
+                tableData={exportTableData}
+              />
               <button onClick={() => setShowPayment(true)} className="btn-success">
                 <DollarSign className="mr-2 h-4 w-4" /> Record Payment
               </button>

@@ -8,6 +8,7 @@ import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
@@ -512,10 +513,41 @@ function GoodsReceiptDetail({ id, onClose }: { id: string; onClose: () => void }
   }
 
   const receiptData = receipt as any;
+  const paymentStatus: PaymentStatus = receiptData.payment_status || 'UNPAID';
+
+  const statusConfig: Record<PaymentStatus, { label: string; className: string }> = {
+    PAID: { label: '✓ Paid', className: 'bg-green-100 text-green-700 border border-green-200' },
+    PARTIAL: { label: '◑ Partial', className: 'bg-yellow-100 text-yellow-700 border border-yellow-200' },
+    UNPAID: { label: '✕ Unpaid', className: 'bg-red-100 text-red-700 border border-red-200' },
+  };
 
   return (
     <Modal isOpen={true} onClose={onClose} title={`Receipt: ${receiptData.receipt_number}`} size="lg">
       <div className="space-y-4 text-sm">
+        {/* Export buttons */}
+        <div className="flex justify-end">
+          <ExportButtons
+            variant="secondary"
+            filename={`GoodsReceipt_${receiptData.receipt_number}`}
+            title={`Goods Receipt ${receiptData.receipt_number}`}
+            tableData={{
+              headers: ['#', 'Product', 'SKU', 'Qty', 'Unit Cost', 'Line Total', 'Batch'],
+              rows: (receiptData.goods_receipt_items || []).map((item: any, idx: number) => [
+                idx + 1,
+                item.products?.name || '—',
+                item.products?.sku || '—',
+                Number(item.quantity),
+                formatCurrency(Number(item.unit_cost)),
+                formatCurrency(Number(item.quantity) * Number(item.unit_cost)),
+                item.batch_number || '—',
+              ]),
+              totals: {
+                'Total Amount': formatCurrency(Number(receiptData.total)),
+              },
+            }}
+          />
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div>
             <span className="text-gray-500">Supplier:</span>
@@ -531,8 +563,18 @@ function GoodsReceiptDetail({ id, onClose }: { id: string; onClose: () => void }
           </div>
           <div>
             <span className="text-gray-500">Status:</span>
-            <div className="font-medium">{receiptData.payment_status || 'UNPAID'}</div>
+            <div className="mt-0.5">
+              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusConfig[paymentStatus].className}`}>
+                {statusConfig[paymentStatus].label}
+              </span>
+            </div>
           </div>
+          {receiptData.outstanding > 0 && (
+            <div>
+              <span className="text-gray-500">Outstanding:</span>
+              <div className="font-bold text-red-600">{formatCurrency(Number(receiptData.outstanding))}</div>
+            </div>
+          )}
         </div>
 
         <div className="border-t pt-4">
@@ -540,7 +582,8 @@ function GoodsReceiptDetail({ id, onClose }: { id: string; onClose: () => void }
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
-                <tr className="border-b text-left text-xs text-gray-500">
+                <tr className="border-b text-left text-xs text-gray-500 uppercase">
+                  <th className="py-2 px-2">#</th>
                   <th className="py-2 px-2">Product</th>
                   <th className="py-2 px-2">Qty</th>
                   <th className="py-2 px-2">Unit Cost</th>
@@ -549,17 +592,18 @@ function GoodsReceiptDetail({ id, onClose }: { id: string; onClose: () => void }
                 </tr>
               </thead>
               <tbody>
-                {(receiptData.goods_receipt_items || []).map((item: Record<string, unknown>) => {
+                {(receiptData.goods_receipt_items || []).map((item: Record<string, unknown>, idx: number) => {
                   const product = item.products as Record<string, unknown> | null;
                   const qty = Number(item.quantity);
                   const cost = Number(item.unit_cost);
                   return (
-                    <tr key={item.id as string} className="border-b">
-                      <td className="py-2 px-2">{product?.name as string}</td>
+                    <tr key={item.id as string} className="border-b hover:bg-gray-50">
+                      <td className="py-2 px-2 text-gray-400 text-xs">{idx + 1}</td>
+                      <td className="py-2 px-2 font-semibold">{product?.name as string}</td>
                       <td className="py-2 px-2">{qty}</td>
                       <td className="py-2 px-2">{formatCurrency(cost)}</td>
-                      <td className="py-2 px-2 font-medium">{formatCurrency(qty * cost)}</td>
-                      <td className="py-2 px-2 text-xs text-gray-500">{(item.batch_number as string) || '-'}</td>
+                      <td className="py-2 px-2 font-bold">{formatCurrency(qty * cost)}</td>
+                      <td className="py-2 px-2 text-xs text-gray-500">{(item.batch_number as string) || '—'}</td>
                     </tr>
                   );
                 })}

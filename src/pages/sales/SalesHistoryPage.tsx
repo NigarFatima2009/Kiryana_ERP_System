@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Eye, Trash2, Clock } from 'lucide-react';
+import { Eye, Trash2, Clock, Banknote, ArrowUpRight } from 'lucide-react';
 import { fetchSales, fetchSale, cancelSale, createSalesReturn } from '../../services/sales';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
 import { formatCurrency, formatDateTime } from '../../utils/helpers';
@@ -14,6 +16,7 @@ import { useNetworkStatus } from '../../hooks/useOfflineStatus';
 import type { OfflineSale } from '../../lib/offline/types';
 
 export function SalesHistoryPage() {
+  const navigate = useNavigate();
   const [page, setPage] = useState(1);
   const [showDetail, setShowDetail] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -128,10 +131,7 @@ export function SalesHistoryPage() {
   };
 
   const getStatus = (row: Record<string, unknown>): string => {
-    if (Number(row.returned_total || 0) > 0 && row.status === 'COMPLETED') return 'PARTIALLY_RETURNED';
-    // Online sales have 'status' field
-    if ('status' in row) return row.status as string;
-    // Offline sales have 'status' field too
+    if (Number(row.returned_total || 0) > 0 && row.status === 'COMPLETED') return 'RETURNED';
     if ('status' in row) return row.status as string;
     return 'UNKNOWN';
   };
@@ -150,8 +150,16 @@ export function SalesHistoryPage() {
       </div>
     )},
     { key: 'customer', header: 'Customer', render: (row) => {
-      if ('customers' in row) return (row.customers as { name: string } | null)?.name || 'Walk-in';
-      if ('customer_name' in row) return (row.customer_name as string) || 'Walk-in';
+      if ('customers' in row && (row.customers as { name: string } | null)?.name) {
+        return (row.customers as { name: string }).name;
+      }
+      if ('customer_name' in row && row.customer_name) {
+        return row.customer_name as string;
+      }
+      if (typeof row.notes === 'string') {
+        const match = row.notes.match(/(?:Customer|Party):\s*([^,()]+)/i);
+        if (match && match[1]) return match[1].trim();
+      }
       return 'Walk-in';
     }},
     { key: 'created_at', header: 'Date', render: (row) => {
@@ -183,11 +191,59 @@ export function SalesHistoryPage() {
       if ('cogs' in row) return formatCurrency(Number(row.cogs));
       return '-';
     }},
-    { key: 'status', header: 'Status', render: (row) => (
-      <span className={`badge ${statusColors[getStatus(row)] || ''}`}>
-        {getStatus(row)}
-      </span>
-    )},
+    { key: 'status', header: 'Status', render: (row) => {
+      const hasCheque =
+        Boolean((row as any).cheque) ||
+        Boolean((row as any).sale_payments?.some((p: any) => p.payment_method === 'CHEQUE')) ||
+        Boolean((row as any).payment_methods?.some((p: any) => p.method === 'CHEQUE')) ||
+        (typeof row.notes === 'string' && row.notes.includes('Cheque'));
+
+      const chequeStatus = (row as any).cheque?.status;
+
+      if (hasCheque && chequeStatus !== 'CLEARED' && getStatus(row) !== 'CANCELLED' && getStatus(row) !== 'RETURNED') {
+        if (chequeStatus === 'BOUNCED') {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="badge bg-red-100 text-red-800 border border-red-200 font-semibold text-[11px]">
+                ✕ Cheque Bounced
+              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate('/cheques');
+                }}
+                className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
+              >
+                Cheque Mgmt <ArrowUpRight size={11} />
+              </button>
+            </div>
+          );
+        }
+
+        return (
+          <div className="flex flex-col items-start gap-0.5">
+            <span className="badge bg-amber-100 text-amber-800 border border-amber-300 font-semibold flex items-center gap-1 text-[11px]">
+              <Banknote size={11} /> Cheque Pending
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate('/cheques');
+              }}
+              className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium underline"
+            >
+              Clear in Cheques <ArrowUpRight size={11} />
+            </button>
+          </div>
+        );
+      }
+
+      return (
+        <span className={`badge ${statusColors[getStatus(row)] || ''}`}>
+          {getStatus(row)}
+        </span>
+      );
+    }},
     { key: 'actions', header: '', render: (row) => (
       <div className="flex items-center gap-1">
         <button onClick={(e) => { e.stopPropagation(); setShowDetail(row.id as string); }} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors">
@@ -214,11 +270,25 @@ export function SalesHistoryPage() {
         </div>
       )}
       {isOnline && unsyncedLocalSales.length > 0 && (
-        <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-3">
+        <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-3 flex items-center justify-between">
           <p className="text-sm text-yellow-800 flex items-center gap-2">
             <Clock size={16} />
             {unsyncedLocalSales.length} local {unsyncedLocalSales.length === 1 ? 'sale is' : 'sales are'} waiting to sync
           </p>
+          <button
+            onClick={async () => {
+              toast('info', 'Syncing offline sales...');
+              const { performOfflineSync } = await import('../../lib/offline/sync');
+              const res = await performOfflineSync();
+              await queryClient.invalidateQueries({ queryKey: ['sales'] });
+              loadOfflineSales();
+              if (res.success) toast('success', `Synced ${res.synced} sales successfully!`);
+              else toast('error', `Sync finished: ${res.synced} synced, ${res.failed} failed`);
+            }}
+            className="btn-primary text-xs py-1 px-3"
+          >
+            Sync Now
+          </button>
         </div>
       )}
       <div className="card p-0">
@@ -248,35 +318,105 @@ export function SalesHistoryPage() {
 function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onClose: () => void; isOffline?: boolean; offlineSales?: OfflineSale[] }) {
   const [showReturnForm, setShowReturnForm] = useState(false);
   const [returnReason, setReturnReason] = useState('CUSTOMER_REQUEST');
+  const [refundMethod, setRefundMethod] = useState('CASH');
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({});
+  const [selectedItemIds, setSelectedItemIds] = useState<Record<string, boolean>>({});
+
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const { data: sale } = useQuery({ queryKey: ['sale', id], queryFn: () => fetchSale(id), enabled: !isOffline });
 
-  const returnMutation = useMutation({
+  // Initialize return quantities when opening return form
+  const openReturnModal = () => {
+    if (!sale?.sale_items) return;
+    const initialQtys: Record<string, number> = {};
+    const initialSelected: Record<string, boolean> = {};
+
+    sale.sale_items.forEach((item: any) => {
+      initialQtys[item.id] = Number(item.quantity);
+      initialSelected[item.id] = false; // User must explicitly select items to return
+    });
+
+    setReturnQuantities(initialQtys);
+    setSelectedItemIds(initialSelected);
+    setShowReturnForm(true);
+  };
+
+  const handleQtyChange = (itemId: string, maxQty: number, delta: number) => {
+    setReturnQuantities((prev) => {
+      const current = prev[itemId] || 0;
+      const next = Math.max(1, Math.min(maxQty, current + delta));
+      return { ...prev, [itemId]: next };
+    });
+  };
+
+  const toggleItemSelection = (itemId: string) => {
+    setSelectedItemIds((prev) => ({
+      ...prev,
+      [itemId]: !prev[itemId],
+    }));
+  };
+
+  // Calculate live refund total
+  const calculateTotalRefund = () => {
+    if (!sale?.sale_items) return 0;
+    return sale.sale_items.reduce((sum: number, item: any) => {
+      if (!selectedItemIds[item.id]) return sum;
+      const qty = returnQuantities[item.id] || 0;
+      const unitPrice = Number(item.unit_price) || (Number(item.line_total) / Number(item.quantity));
+      return sum + unitPrice * qty;
+    }, 0);
+  };
+
+  const processReturnMutation = useMutation({
     mutationFn: async () => {
       if (!sale) throw new Error('No sale found to return');
-      return createSalesReturn({
+      
+      const itemsToReturn = (sale.sale_items || [])
+        .filter((item: any) => selectedItemIds[item.id] && (returnQuantities[item.id] || 0) > 0)
+        .map((item: any) => ({
+          sale_item_id: item.id,
+          quantity: returnQuantities[item.id] || 1,
+          amount: (Number(item.unit_price) || (Number(item.line_total) / Number(item.quantity))) * (returnQuantities[item.id] || 1),
+        }));
+
+      if (itemsToReturn.length === 0) {
+        throw new Error('Please select at least one item to return');
+      }
+
+      const { processSaleReturn } = await import('../../services/sales');
+      return processSaleReturn({
         sale_id: sale.id,
-        return_reason: returnReason,
-        notes: '',
+        customer_id: sale.customer_id || undefined,
+        reason: returnReason,
+        refund_method: refundMethod,
+        items: itemsToReturn,
       });
     },
-    onSuccess: () => {
-      toast('success', 'Return created successfully');
+    onSuccess: (result) => {
+      toast('success', `Return ${result.return_number} processed: ${formatCurrency(result.total)}`);
+      // Invalidate all relevant queries so data updates in real time
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['sale', id] });
-      queryClient.invalidateQueries({ queryKey: ['shift-sales'] }); // Refresh shift sales
-      queryClient.invalidateQueries({ queryKey: ['current-shift'] }); // Refresh shift expected cash
-      queryClient.invalidateQueries({ queryKey: ['inventory'] }); // Refresh inventory
-      queryClient.invalidateQueries({ queryKey: ['stock-movements'] }); // Refresh stock movements
+      queryClient.invalidateQueries({ queryKey: ['shift-sales'] });
+      queryClient.invalidateQueries({ queryKey: ['current-shift'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['pos-products'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['products-all'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       setShowReturnForm(false);
-      onClose();
+      // Don't close modal — let user see updated sale with return info
     },
     onError: (error: any) => {
-      toast('error', error.message || 'Failed to create return');
+      toast('error', error.message || 'Failed to process return');
     },
   });
+
+
 
   // For offline sales, find from local array
   if (isOffline && offlineSales) {
@@ -314,18 +454,6 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
             )}
             <div className="flex justify-between font-bold text-lg border-t border-slate-200 pt-2"><span>Total:</span><span>{formatCurrency(offlineSale.total)}</span></div>
           </div>
-          {offlineSale.status === 'sync_failed' && offlineSale.last_sync_error && (
-            <div className="bg-red-50 border border-red-200 rounded p-3 text-red-700 text-xs">
-              <p className="font-medium">Sync Error:</p>
-              <p>{offlineSale.last_sync_error}</p>
-            </div>
-          )}
-          {offlineSale.status === 'conflict' && offlineSale.last_sync_error && (
-            <div className="bg-orange-50 border border-orange-200 rounded p-3 text-orange-700 text-xs">
-              <p className="font-medium">Conflict:</p>
-              <p>{offlineSale.last_sync_error}</p>
-            </div>
-          )}
         </div>
       </Modal>
     );
@@ -334,35 +462,126 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
   if (!sale) return <Modal isOpen={true} onClose={onClose} title="Loading..."><p>Loading...</p></Modal>;
 
   if (showReturnForm) {
+    const totalRefund = calculateTotalRefund();
+    const selectedCount = Object.values(selectedItemIds).filter(Boolean).length;
+
     return (
-      <Modal isOpen={true} onClose={() => setShowReturnForm(false)} title="Create Return" size="sm">
+      <Modal isOpen={true} onClose={() => setShowReturnForm(false)} title={`Return Items — ${sale.invoice_number}`} size="lg">
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Return Reason</label>
-            <select
-              value={returnReason}
-              onChange={(e) => setReturnReason(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="CUSTOMER_REQUEST">Customer Request</option>
-              <option value="DEFECTIVE">Defective</option>
-              <option value="DAMAGED">Damaged</option>
-              <option value="OTHER">Other</option>
-            </select>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800">
+            Select the specific items and choose the quantities you want to return to stock.
           </div>
+
+          <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
+            <div className="bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 grid grid-cols-12 gap-2 uppercase">
+              <div className="col-span-1 text-center">Select</div>
+              <div className="col-span-5">Product</div>
+              <div className="col-span-3 text-center">Return Qty</div>
+              <div className="col-span-3 text-right">Refund Amount</div>
+            </div>
+
+            {(sale.sale_items || []).map((item: any) => {
+              const isSelected = !!selectedItemIds[item.id];
+              const returnQty = returnQuantities[item.id] || 1;
+              const maxQty = Number(item.quantity);
+              const unitPrice = Number(item.unit_price) || (Number(item.line_total) / Number(item.quantity));
+              const lineRefund = unitPrice * returnQty;
+
+              return (
+                <div key={item.id} className={`px-3 py-2.5 grid grid-cols-12 gap-2 items-center text-sm ${isSelected ? 'bg-white' : 'bg-slate-50/50 opacity-60'}`}>
+                  <div className="col-span-1 text-center">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleItemSelection(item.id)}
+                      className="w-4 h-4 text-blue-600 rounded cursor-pointer"
+                    />
+                  </div>
+                  <div className="col-span-5">
+                    <p className="font-semibold text-slate-900">{item.products?.name || 'Product'}</p>
+                    <p className="text-xs text-slate-500">Sold: {maxQty} units @ {formatCurrency(unitPrice)}</p>
+                  </div>
+                  <div className="col-span-3 flex items-center justify-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!isSelected || returnQty <= 1}
+                      onClick={() => handleQtyChange(item.id, maxQty, -1)}
+                      className="w-7 h-7 rounded border border-slate-300 flex items-center justify-center font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                    >
+                      -
+                    </button>
+                    <span className="w-8 text-center font-bold text-sm">{returnQty}</span>
+                    <button
+                      type="button"
+                      disabled={!isSelected || returnQty >= maxQty}
+                      onClick={() => handleQtyChange(item.id, maxQty, 1)}
+                      className="w-7 h-7 rounded border border-slate-300 flex items-center justify-center font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="col-span-3 text-right font-bold text-red-600">
+                    {isSelected ? `-${formatCurrency(lineRefund)}` : '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Return Reason</label>
+              <select
+                value={returnReason}
+                onChange={(e) => setReturnReason(e.target.value)}
+                className="select-field text-xs py-2"
+              >
+                <option value="CUSTOMER_REQUEST">Customer Request</option>
+                <option value="DEFECTIVE">Defective / Damaged</option>
+                <option value="EXPIRED">Expired / Quality Issue</option>
+                <option value="WRONG_ITEM">Wrong Item Purchased</option>
+                <option value="OTHER">Other Reason</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Refund Method</label>
+              <select
+                value={refundMethod}
+                onChange={(e) => setRefundMethod(e.target.value)}
+                className="select-field text-xs py-2"
+              >
+                <option value="CASH">Cash Refund</option>
+                <option value="CUSTOMER_CREDIT">Customer Khata (Credit)</option>
+                <option value="BANK_TRANSFER">Bank Transfer</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex justify-between items-center">
+            <div>
+              <p className="text-xs text-slate-500">Selected for Return</p>
+              <p className="font-bold text-slate-800">{selectedCount} item(s)</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-slate-500">Total Refund & Stock Return</p>
+              <p className="text-lg font-bold text-red-600">-{formatCurrency(totalRefund)}</p>
+            </div>
+          </div>
+
           <div className="flex gap-2">
             <button
-              onClick={() => returnMutation.mutate()}
-              disabled={returnMutation.isPending}
-              className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-            >
-              {returnMutation.isPending ? 'Processing...' : 'Create Return'}
-            </button>
-            <button
               onClick={() => setShowReturnForm(false)}
-              className="flex-1 px-3 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200"
+              className="flex-1 px-3 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200"
             >
               Cancel
+            </button>
+            <button
+              onClick={() => processReturnMutation.mutate()}
+              disabled={selectedCount === 0 || totalRefund <= 0 || processReturnMutation.isPending}
+              className="flex-1 px-3 py-2 bg-orange-600 text-white rounded-lg text-sm font-semibold hover:bg-orange-700 disabled:opacity-50"
+            >
+              {processReturnMutation.isPending ? 'Processing Return...' : `Confirm Return (${formatCurrency(totalRefund)})`}
             </button>
           </div>
         </div>
@@ -373,73 +592,134 @@ function SaleDetail({ id, onClose, isOffline, offlineSales }: { id: string; onCl
   return (
     <Modal isOpen={true} onClose={onClose} title={`Invoice: ${sale.invoice_number}`} size="lg">
       <div className="space-y-4 text-sm">
-        <div className="grid grid-cols-2 gap-4">
-          <div><span className="text-slate-500">Customer:</span> {(sale.customers as Record<string, unknown>)?.name as string || 'Walk-in'}</div>
-          <div><span className="text-slate-500">Cashier:</span> {(() => { const p = sale.profiles as { full_name?: string; email?: string } | null; return p?.full_name || (p?.email ? p.email.split('@')[0] : 'System'); })()}</div>
-          <div><span className="text-slate-500">Date:</span> {formatDateTime(sale.sale_date)}</div>
-          <div><span className="text-slate-500">Status:</span> {sale.status}</div>
+        {/* Top meta & Action Export Buttons */}
+        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 pb-3 border-b border-slate-100">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div><span className="text-slate-500">Customer:</span> <span className="font-semibold text-slate-800">{(sale.customers as Record<string, unknown>)?.name as string || 'Walk-in'}</span></div>
+            <div><span className="text-slate-500">Cashier:</span> <span className="font-semibold text-slate-800">{(() => { const p = sale.profiles as { full_name?: string; email?: string } | null; return p?.full_name || (p?.email ? p.email.split('@')[0] : 'System'); })()}</span></div>
+            <div><span className="text-slate-500">Date:</span> <span className="font-semibold text-slate-800">{formatDateTime(sale.sale_date)}</span></div>
+            <div><span className="text-slate-500">Status:</span> <span className="font-bold text-blue-600">{sale.status}</span></div>
+          </div>
         </div>
-        <div><span className="text-slate-500">Total:</span> <span className="font-bold">{formatCurrency(Number(sale.total))}</span></div>
+
+        {/* Action Export Buttons */}
+        <div className="flex flex-wrap gap-2 justify-end">
+          <ExportButtons
+            variant="secondary"
+            filename={`invoice-${sale.invoice_number}`}
+            title={`Invoice ${sale.invoice_number}`}
+            invoiceData={{
+              invoiceNumber: sale.invoice_number,
+              date: sale.sale_date,
+              customer: (sale.customers as Record<string, unknown>)?.name as string || 'Walk-in',
+              items: (sale.sale_items || []).map((i: any) => ({
+                description: i.products?.name || 'Product',
+                quantity: Number(i.quantity),
+                unitPrice: Number(i.unit_price),
+                amount: Number(i.line_total),
+              })),
+              subtotal: Number(sale.subtotal),
+              tax: Number(sale.tax),
+              total: Number(sale.total),
+              payments: (sale.sale_payments || []).map((p: any) => ({
+                method: p.payment_method.replace('CUSTOMER_CREDIT', 'Khata / Credit'),
+                amount: Number(p.amount),
+              })),
+              notes: sale.status === 'CANCELLED' ? 'This invoice has been cancelled' : undefined,
+            }}
+          />
+        </div>
+
+        <div>
+          <span className="text-slate-500">Total:</span> <span className="font-bold text-lg text-slate-900 ml-1">{formatCurrency(Number(sale.total))}</span>
+        </div>
+
         {Number(sale.returned_total || 0) > 0 && (
           <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-orange-800">
             <div className="flex justify-between"><span>Returned</span><span className="font-semibold">-{formatCurrency(Number(sale.returned_total))}</span></div>
             <div className="mt-1 flex justify-between border-t border-orange-200 pt-1 font-bold"><span>Net sale</span><span>{formatCurrency(Math.max(0, Number(sale.total) - Number(sale.returned_total)))}</span></div>
           </div>
         )}
-        <table className="min-w-full text-sm">
-          <thead><tr className="border-b border-slate-200 text-left text-xs font-semibold text-slate-500">
-            <th className="py-2">Product</th><th className="py-2">Qty</th><th className="py-2">Price</th><th className="py-2">Total</th><th className="py-2">COGS</th>
-          </tr></thead>
-          <tbody>
-            {(sale.sale_items || []).map((item: Record<string, unknown>) => (
-              <tr key={item.id as string} className="border-b border-slate-100">
-                <td className="py-2 font-medium">{(item.products as Record<string, unknown>)?.name as string}</td>
-                <td className="py-2">{Number(item.quantity)}</td>
-                <td className="py-2">{formatCurrency(Number(item.unit_price))}</td>
-                <td className="py-2 font-semibold">{formatCurrency(Number(item.line_total))}</td>
-                <td className="py-2 text-slate-500">{formatCurrency(Number(item.cogs))}</td>
+
+        {/* Product Line Items */}
+        <div className="border border-slate-200 rounded-lg overflow-hidden">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-left text-xs font-bold text-slate-600 uppercase">
+                <th className="py-2.5 px-3">Product</th>
+                <th className="py-2.5 px-3 text-center">Qty</th>
+                <th className="py-2.5 px-3 text-right">Price</th>
+                <th className="py-2.5 px-3 text-right">Total</th>
+                <th className="py-2.5 px-3 text-right text-slate-500">COGS</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {(sale.sale_items || []).map((item: Record<string, unknown>) => (
+                <tr key={item.id as string} className="hover:bg-slate-50">
+                  <td className="py-2.5 px-3 font-semibold text-slate-800">{(item.products as Record<string, unknown>)?.name as string || 'Product'}</td>
+                  <td className="py-2.5 px-3 text-center font-bold">{Number(item.quantity)}</td>
+                  <td className="py-2.5 px-3 text-right">{formatCurrency(Number(item.unit_price))}</td>
+                  <td className="py-2.5 px-3 text-right font-bold text-slate-900">{formatCurrency(Number(item.line_total))}</td>
+                  <td className="py-2.5 px-3 text-right text-slate-500">{formatCurrency(Number(item.cogs))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Payments Breakdown */}
         {(sale.sale_payments || []).length > 0 && (
-          <div>
-            <h4 className="font-semibold mb-2">Payments</h4>
+          <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+            <h4 className="font-bold text-xs uppercase text-slate-600 mb-1.5">Payments Breakdown</h4>
             {(sale.sale_payments || []).map((p: Record<string, unknown>) => (
-              <div key={p.id as string} className="flex justify-between text-sm">
-                <span>{p.payment_method as string}</span>
-                <span className="font-medium">{formatCurrency(Number(p.amount))}</span>
+              <div key={p.id as string} className="flex justify-between text-xs py-0.5">
+                <span className="font-medium text-slate-700">{(p.payment_method as string).replace('CUSTOMER_CREDIT', 'Khata / Credit')}</span>
+                <span className="font-bold text-slate-900">{formatCurrency(Number(p.amount))}</span>
               </div>
             ))}
           </div>
         )}
+
+        {/* Returns history */}
         {(sale.sales_returns || []).length > 0 && (
           <div>
-            <h4 className="font-semibold mb-2">Returns</h4>
+            <h4 className="font-semibold mb-2">Returns History</h4>
             {(sale.sales_returns || []).map((saleReturn: Record<string, unknown>) => (
-              <div key={saleReturn.id as string} className="flex justify-between text-sm text-orange-700">
+              <div key={saleReturn.id as string} className="flex justify-between text-sm text-orange-700 bg-orange-50 px-2 py-1 rounded mb-1">
                 <span>{saleReturn.return_number as string} · {saleReturn.reason as string}</span>
                 <span className="font-medium">-{formatCurrency(Number(saleReturn.total))}</span>
               </div>
             ))}
           </div>
         )}
-        <div className="border-t border-slate-200 pt-3 space-y-1">
-          <div className="flex justify-between"><span>Subtotal:</span><span>{formatCurrency(Number(sale.subtotal))}</span></div>
-          <div className="flex justify-between"><span>Discount:</span><span className="text-red-600">-{formatCurrency(Number(sale.discount))}</span></div>
-          <div className="flex justify-between"><span>Tax:</span><span>{formatCurrency(Number(sale.tax))}</span></div>
-          <div className="flex justify-between font-bold text-lg border-t border-slate-200 pt-2"><span>Total:</span><span>{formatCurrency(Number(sale.total))}</span></div>
-          <div className="flex justify-between text-emerald-600"><span>COGS:</span><span>{formatCurrency(Number(sale.cogs))}</span></div>
-          <div className="flex justify-between font-bold text-emerald-700"><span>Profit:</span><span>{formatCurrency(Number(sale.total) - Number(sale.cogs))}</span></div>
+
+        {/* Financial Summary */}
+        <div className="border-t border-slate-200 pt-3 space-y-1 text-sm">
+          <div className="flex justify-between text-slate-600"><span>Subtotal:</span><span>{formatCurrency(Number(sale.subtotal))}</span></div>
+          {Number(sale.discount) > 0 && (
+            <div className="flex justify-between text-red-600"><span>Discount:</span><span>-{formatCurrency(Number(sale.discount))}</span></div>
+          )}
+          {Number(sale.tax) > 0 && (
+            <div className="flex justify-between text-slate-600"><span>Tax:</span><span>{formatCurrency(Number(sale.tax))}</span></div>
+          )}
+          <div className="flex justify-between font-bold text-base border-t border-slate-200 pt-2 text-slate-900">
+            <span>Total:</span><span>{formatCurrency(Number(sale.total))}</span>
+          </div>
+          <div className="flex justify-between text-xs text-emerald-600 pt-1"><span>COGS:</span><span>{formatCurrency(Number(sale.cogs))}</span></div>
+          <div className="flex justify-between text-xs font-bold text-emerald-700"><span>Profit:</span><span>{formatCurrency(Number(sale.total) - Number(sale.cogs))}</span></div>
         </div>
-        <div className="border-t border-slate-200 pt-3 flex gap-2">
-          <button
-            onClick={() => setShowReturnForm(true)}
-            className="flex-1 px-3 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700"
-          >
-            Return Items
-          </button>
-        </div>
+
+        {/* Action Button: Itemized Return — only if no return has been processed yet */}
+        {sale.status !== 'CANCELLED' && (!sale.sales_returns || sale.sales_returns.length === 0) && (
+          <div className="border-t border-slate-200 pt-3 flex gap-2">
+            <button
+              onClick={openReturnModal}
+              className="flex-1 px-3 py-2 bg-orange-600 text-white rounded-lg text-sm font-semibold hover:bg-orange-700 transition flex items-center justify-center gap-1.5"
+            >
+              <span>↩ Return Specific Items & Stock</span>
+            </button>
+          </div>
+        )}
       </div>
     </Modal>
   );

@@ -8,10 +8,12 @@ import { formatDate } from '../../utils/helpers';
 export function BatchesPage() {
   const [filter, setFilter] = useState<'all' | 'expiring'>('all');
 
-  const { data, isLoading } = useQuery({
+  const { data: rawData = [], isLoading } = useQuery<any[]>({
     queryKey: ['batches', filter],
-    queryFn: () => fetchBatches({ expiringSoon: filter === 'expiring' }),
+    queryFn: () => fetchBatches({ expiringSoon: filter === 'expiring' }) as Promise<any[]>,
   });
+
+  const batches = Array.isArray(rawData) ? rawData : (rawData as any)?.data || [];
 
   const getExpiryStatus = (expiryDate: string | null) => {
     if (!expiryDate) return { label: 'No Expiry', color: 'bg-gray-100 text-gray-600' };
@@ -62,12 +64,12 @@ export function BatchesPage() {
     { key: 'received_date', header: 'Received Date', render: (row) => formatDate(row.received_date as string) },
   ];
 
-  const expiredCount = (data || []).filter((b) => {
+  const expiredCount = batches.filter((b: any) => {
     if (!b.expiry_date) return false;
     return new Date(b.expiry_date) < new Date();
   }).length;
 
-  const expiringCount = (data || []).filter((b) => {
+  const expiringCount = batches.filter((b: any) => {
     if (!b.expiry_date) return false;
     const days = Math.ceil((new Date(b.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
     return days >= 0 && days <= 30;
@@ -79,7 +81,7 @@ export function BatchesPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Batches & Expiry</h1>
           <div className="mt-1 flex gap-4 text-sm">
-            <span className="text-gray-500">Total: {data?.length || 0} batches</span>
+            <span className="text-gray-500">Total: {batches.length} batches</span>
             {expiredCount > 0 && <span className="text-red-600 font-medium">⚠ {expiredCount} expired</span>}
             {expiringCount > 0 && <span className="text-yellow-600 font-medium">⏰ {expiringCount} expiring soon</span>}
           </div>
@@ -93,7 +95,7 @@ export function BatchesPage() {
       </div>
 
       <div className="card p-0">
-        <DataTable columns={columns} data={(data || []).map((i) => i as unknown as Record<string, unknown>)} isLoading={isLoading} emptyMessage="No batches found" />
+        <DataTable columns={columns} data={batches.map((i: any) => i as Record<string, unknown>)} isLoading={isLoading} emptyMessage="No batches found" />
       </div>
     </div>
   );

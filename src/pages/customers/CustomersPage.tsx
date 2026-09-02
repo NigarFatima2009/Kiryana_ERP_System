@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { fetchCustomers, createCustomer, updateCustomer, fetchCustomerTransactions, fetchCustomerBalance } from '../../services/customers';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Modal } from '../../components/ui/Modal';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
@@ -208,46 +209,66 @@ function CustomerDetail({ customer, onClose }: { customer: Customer; onClose: ()
 
   return (
     <Modal isOpen={true} onClose={onClose} title={customer.name} size="xl">
-      <div className="flex gap-4 mb-4">
-        <button onClick={() => setTab('ledger')} className={tab === 'ledger' ? 'btn-primary text-xs' : 'btn-secondary text-xs'}>Ledger</button>
-        <button onClick={() => setTab('info')} className={tab === 'info' ? 'btn-primary text-xs' : 'btn-secondary text-xs'}>Info</button>
-        <div className="ml-auto text-lg font-bold">
-          Balance: <span className={balance && balance > 0 ? 'text-red-600' : 'text-green-600'}>{formatCurrency(balance || 0)}</span>
+      <div className="space-y-4">
+        {/* Export Buttons */}
+        <div className="flex justify-end">
+          <ExportButtons
+            variant="secondary"
+            filename={`Customer_${customer.name}`}
+            title={`Customer Information - ${customer.name}`}
+            data={{
+              'Name': customer.name,
+              'Phone': customer.phone || '-',
+              'Email': customer.email || '-',
+              'Address': customer.address || '-',
+              'Credit Limit (PKR)': formatCurrency(Number(customer.credit_limit)),
+              'Opening Balance (PKR)': formatCurrency(Number(customer.opening_balance)),
+              'Current Balance (PKR)': formatCurrency(balance || 0),
+            }}
+          />
         </div>
+
+        <div className="flex gap-4 mb-4">
+          <button onClick={() => setTab('ledger')} className={tab === 'ledger' ? 'btn-primary text-xs' : 'btn-secondary text-xs'}>Ledger</button>
+          <button onClick={() => setTab('info')} className={tab === 'info' ? 'btn-primary text-xs' : 'btn-secondary text-xs'}>Info</button>
+          <div className="ml-auto text-lg font-bold">
+            Balance: <span className={balance && balance > 0 ? 'text-red-600' : 'text-green-600'}>{formatCurrency(balance || 0)}</span>
+          </div>
+        </div>
+
+        {tab === 'info' && (
+          <div className="space-y-2 text-sm">
+            <p><span className="text-gray-500">Phone:</span> {customer.phone || '-'}</p>
+            <p><span className="text-gray-500">Email:</span> {customer.email || '-'}</p>
+            <p><span className="text-gray-500">Address:</span> {customer.address || '-'}</p>
+            <p><span className="text-gray-500">Credit Limit:</span> {formatCurrency(Number(customer.credit_limit))}</p>
+          </div>
+        )}
+
+        {tab === 'ledger' && (
+          <div className="max-h-96 overflow-y-auto">
+            {(!transactions || transactions.length === 0) ? (
+              <p className="py-8 text-center text-gray-500">No transactions</p>
+            ) : (
+              <table className="min-w-full text-sm">
+                <thead><tr className="border-b text-left text-xs text-gray-500">
+                  <th className="py-2">Date</th><th className="py-2">Type</th><th className="py-2">Amount</th><th className="py-2">Narration</th>
+                </tr></thead>
+                <tbody>
+                  {transactions.map((t: CustomerTransaction) => (
+                    <tr key={t.id} className="border-b">
+                      <td className="py-2">{formatDateTime(t.created_at)}</td>
+                      <td className="py-2"><span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs">{t.transaction_type.replace('_', ' ')}</span></td>
+                      <td className="py-2 font-medium">{formatCurrency(Number(t.amount))}</td>
+                      <td className="py-2 text-gray-500">{t.narration || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
-
-      {tab === 'info' && (
-        <div className="space-y-2 text-sm">
-          <p><span className="text-gray-500">Phone:</span> {customer.phone || '-'}</p>
-          <p><span className="text-gray-500">Email:</span> {customer.email || '-'}</p>
-          <p><span className="text-gray-500">Address:</span> {customer.address || '-'}</p>
-          <p><span className="text-gray-500">Credit Limit:</span> {formatCurrency(Number(customer.credit_limit))}</p>
-        </div>
-      )}
-
-      {tab === 'ledger' && (
-        <div className="max-h-96 overflow-y-auto">
-          {(!transactions || transactions.length === 0) ? (
-            <p className="py-8 text-center text-gray-500">No transactions</p>
-          ) : (
-            <table className="min-w-full text-sm">
-              <thead><tr className="border-b text-left text-xs text-gray-500">
-                <th className="py-2">Date</th><th className="py-2">Type</th><th className="py-2">Amount</th><th className="py-2">Narration</th>
-              </tr></thead>
-              <tbody>
-                {transactions.map((t: CustomerTransaction) => (
-                  <tr key={t.id} className="border-b">
-                    <td className="py-2">{formatDateTime(t.created_at)}</td>
-                    <td className="py-2"><span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs">{t.transaction_type.replace('_', ' ')}</span></td>
-                    <td className="py-2 font-medium">{formatCurrency(Number(t.amount))}</td>
-                    <td className="py-2 text-gray-500">{t.narration || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
     </Modal>
   );
 }

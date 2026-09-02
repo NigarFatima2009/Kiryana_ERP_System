@@ -9,6 +9,7 @@ import { DataTable, type Column } from '../../components/ui/DataTable';
 import { Pagination } from '../../components/ui/Pagination';
 import { Modal } from '../../components/ui/Modal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { ExportButtons } from '../../components/ui/ExportButtons';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../lib/auth';
 import { formatCurrency, formatDate } from '../../utils/helpers';
@@ -217,29 +218,57 @@ function PurchaseOrderDetail({ id, onClose }: { id: string; onClose: () => void 
 
   if (!po) return <Modal isOpen={true} onClose={onClose} title="Loading..."><p>Loading...</p></Modal>;
 
+  const supplierName = (po.suppliers as Record<string, unknown>)?.name as string || 'Supplier';
+
   return (
-    <Modal isOpen={true} onClose={onClose} title={`PO: ${po.order_number}`} size="lg">
+    <Modal isOpen={true} onClose={onClose} title={`Purchase Order: ${po.order_number}`} size="lg">
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div><span className="text-gray-500">Supplier:</span> {(po.suppliers as Record<string, unknown>)?.name as string}</div>
-          <div><span className="text-gray-500">Date:</span> {formatDate(po.order_date)}</div>
-          <div><span className="text-gray-500">Status:</span> {po.status}</div>
-          <div><span className="text-gray-500">Total:</span> <span className="font-bold">{formatCurrency(Number(po.total))}</span></div>
+        {/* Export Action Buttons */}
+        <div className="flex justify-end gap-2">
+          <ExportButtons
+            variant="secondary"
+            filename={`PurchaseOrder_${po.order_number}`}
+            title={`Purchase Order ${po.order_number}`}
+            tableData={{
+              headers: ['#', 'Product', 'Ordered Qty', 'Received Qty', 'Unit Cost', 'Line Total'],
+              rows: (po.purchase_order_items || []).map((item: any, idx: number) => [
+                idx + 1,
+                item.products?.name || '—',
+                Number(item.quantity),
+                Number(item.received_quantity || 0),
+                formatCurrency(Number(item.unit_cost)),
+                formatCurrency(Number(item.quantity) * Number(item.unit_cost)),
+              ]),
+              totals: {
+                'Total Amount': formatCurrency(Number(po.total)),
+              },
+            }}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 text-sm bg-slate-50 p-3 rounded-lg border border-slate-200">
+          <div><span className="text-gray-500 font-medium">Supplier:</span> <span className="font-semibold text-gray-900">{supplierName}</span></div>
+          <div><span className="text-gray-500 font-medium">Date:</span> <span className="font-semibold text-gray-900">{formatDate(po.order_date)}</span></div>
+          <div><span className="text-gray-500 font-medium">Status:</span> <span className="font-bold text-blue-700">{po.status}</span></div>
+          <div><span className="text-gray-500 font-medium">Total:</span> <span className="font-bold text-gray-900">{formatCurrency(Number(po.total))}</span></div>
         </div>
 
         <table className="min-w-full text-sm">
-          <thead><tr className="border-b text-left text-xs text-gray-500">
-            <th className="py-2">Product</th><th className="py-2">Ordered</th><th className="py-2">Received</th><th className="py-2">Cost</th>
+          <thead><tr className="border-b text-left text-xs text-gray-500 uppercase">
+            <th className="py-2">Product</th><th className="py-2 text-center">Ordered</th><th className="py-2 text-center">Received</th><th className="py-2 text-right">Cost</th><th className="py-2 text-right">Total</th>
           </tr></thead>
           <tbody>
             {(po.purchase_order_items || []).map((item: Record<string, unknown>) => {
               const p = item.products as Record<string, unknown> | null;
+              const qty = Number(item.quantity);
+              const cost = Number(item.unit_cost);
               return (
-                <tr key={item.id as string} className="border-b">
-                  <td className="py-2">{p?.name as string || '-'}</td>
-                  <td className="py-2">{Number(item.quantity)}</td>
-                  <td className="py-2">{Number(item.received_quantity)}</td>
-                  <td className="py-2">{formatCurrency(Number(item.unit_cost))}</td>
+                <tr key={item.id as string} className="border-b hover:bg-gray-50">
+                  <td className="py-2 font-medium text-gray-900">{p?.name as string || '-'}</td>
+                  <td className="py-2 text-center">{qty}</td>
+                  <td className="py-2 text-center">{Number(item.received_quantity || 0)}</td>
+                  <td className="py-2 text-right">{formatCurrency(cost)}</td>
+                  <td className="py-2 text-right font-bold text-gray-900">{formatCurrency(qty * cost)}</td>
                 </tr>
               );
             })}

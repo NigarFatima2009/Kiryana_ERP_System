@@ -43,38 +43,96 @@ export async function fetchSupplierTransactions(supplierId: string) {
 }
 
 export async function fetchSupplierBalance(supplierId: string) {
-  const { data: supplier } = await supabase.from('suppliers').select('opening_balance').eq('id', supplierId).single();
-  const { data: transactions } = await supabase
-    .from('supplier_transactions')
-    .select('amount, transaction_type')
+  // Get opening balance
+  const { data: supplier } = await supabase
+    .from('suppliers')
+    .select('opening_balance')
+    .eq('id', supplierId)
+    .single();
+
+  // Get all goods receipts for this supplier
+  const { data: receipts } = await supabase
+    .from('goods_receipts')
+    .select('id, total')
     .eq('supplier_id', supplierId);
 
+  // Get all payments linked to receipts (ONLY count receipt-specific payments)
+  const { data: transactions } = await supabase
+    .from('supplier_transactions')
+    .select('amount, transaction_type, reference_type')
+    .eq('supplier_id', supplierId)
+    .eq('reference_type', 'PURCHASE');  // Only payments linked to receipts
+
   let balance = supplier?.opening_balance || 0;
-  if (transactions) {
-    for (const t of transactions) {
-      if (['PURCHASE', 'OPENING'].includes(t.transaction_type)) balance += t.amount;
-      if (['PAYMENT', 'RETURN'].includes(t.transaction_type)) balance -= t.amount;
+
+  // Add all receipt totals as payable
+  for (const receipt of receipts || []) {
+    balance += Number(receipt.total);
+  }
+
+  // Subtract payments made
+  for (const t of transactions || []) {
+    if (t.transaction_type === 'PAYMENT') {
+      balance -= Number(t.amount);
+    } else if (t.transaction_type === 'RETURN') {
+      balance -= Math.abs(Number(t.amount));
     }
   }
-  return balance;
+
+  return Math.max(0, balance); // Never negative
 }
 
-export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' | 'payment_date'>) {
+export async function createSupplierPayment(payment: Omit<SupplierPayment, 'id' | 'payment_date'> & { goodsReceiptIds?: string[] }) {
   const { data, error } = await supabase.from('supplier_payments').insert({
-    ...payment,
+    supplier_id: payment.supplier_id,
+    amount: payment.amount,
+    payment_method: payment.payment_method,
+    reference: payment.reference,
+    created_by: payment.created_by,
     payment_date: new Date().toISOString(),
   }).select().single();
   if (error) throw error;
 
-  // Create supplier transaction (PAYMENT type) so balance is reduced
-  await supabase.from('supplier_transactions').insert({
-    supplier_id: payment.supplier_id,
-    transaction_type: 'PAYMENT',
-    amount: payment.amount,
-    reference_type: 'SUPPLIER_PAYMENT',
-    reference_id: data.id,
-    narration: `Payment via ${payment.payment_method}`,
-  });
+  // Get all unpaid goods receipts for this supplier if not specified
+  let receiptIds = payment.goodsReceiptIds;
+  if (!receiptIds || receiptIds.length === 0) {
+    const { data: receipts } = await supabase
+      .from('goods_receipts')
+      .select('id')
+      .eq('supplier_id', payment.supplier_id)
+      .order('created_at', { ascending: true });
+    receiptIds = (receipts || []).map(r => r.id);
+  }
+
+  // Allocate payment to receipts in FIFO order
+  let remainingAmount = payment.amount;
+  for (const receiptId of receiptIds || []) {
+    if (remainingAmount <= 0) break;
+
+    // Get receipt total
+    const { data: receipt } = await supabase
+      .from('goods_receipts')
+      .select('total')
+      .eq('id', receiptId)
+      .single();
+
+    if (!receipt) continue;
+
+    const receiptTotal = Number(receipt.total);
+    const amountForThisReceipt = Math.min(remainingAmount, receiptTotal);
+
+    // Create transaction linking this payment to the receipt
+    await supabase.from('supplier_transactions').insert({
+      supplier_id: payment.supplier_id,
+      transaction_type: 'PAYMENT',
+      amount: amountForThisReceipt,
+      reference_type: 'PURCHASE',
+      reference_id: receiptId,
+      narration: `Payment via ${payment.payment_method}`,
+    });
+
+    remainingAmount -= amountForThisReceipt;
+  }
 
   // Create audit log
   await audit.supplierPayment(payment.supplier_id, payment.amount, payment.payment_method);

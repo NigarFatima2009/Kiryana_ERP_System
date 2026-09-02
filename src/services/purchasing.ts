@@ -33,13 +33,47 @@ export async function fetchPurchaseOrders(params?: {
 }
 
 export async function fetchPurchaseOrder(id: string) {
-  const { data, error } = await supabase
+  // Fetch main purchase order
+  const { data: po, error: poError } = await supabase
     .from('purchase_orders')
-    .select('*, suppliers!purchase_orders_supplier_id_fkey(*), purchase_order_items(*, products!purchase_order_items_product_id_fkey(name, sku))')
+    .select('*')
     .eq('id', id)
     .single();
-  if (error) throw error;
-  return data;
+  
+  if (poError) throw poError;
+
+  // Fetch supplier and items in parallel
+  const [
+    { data: supplier },
+    { data: items }
+  ] = await Promise.all([
+    supabase.from('suppliers').select('*').eq('id', po.supplier_id).single(),
+    supabase.from('purchase_order_items').select('*').eq('purchase_order_id', id)
+  ]);
+
+  // Batch fetch products for all items
+  const productIds = [...new Set((items || []).map((i) => i.product_id))];
+  const { data: products } = await supabase
+    .from('products')
+    .select('id, name, sku')
+    .in('id', productIds);
+  
+  const prodMap = new Map((products || []).map((p) => [p.id, p]));
+
+  // Enrich items with product data
+  const enrichedItems = (items || []).map((item) => ({
+    ...item,
+    products: prodMap.get(item.product_id) || { id: item.product_id, name: 'Unknown', sku: '' }
+  }));
+
+  console.log('[fetchPurchaseOrder] Fetched PO:', po);
+  console.log('[fetchPurchaseOrder] Items:', enrichedItems);
+  
+  return {
+    ...po,
+    suppliers: supplier,
+    purchase_order_items: enrichedItems
+  };
 }
 
 export async function createPurchaseOrder(order: {
@@ -129,45 +163,54 @@ export async function fetchGoodsReceipts(params?: { supplier_id?: string; page?:
   const { data, error, count } = await query;
   if (error) throw error;
 
-  // Fetch supplier payment summaries for all unique suppliers in this page
-  const supplierIds = [...new Set((data || []).map((r) => r.supplier_id))];
-  const supplierBalances: Record<string, { totalPurchases: number; totalPayments: number }> = {};
+  // Calculate payment status per receipt using payment records linked to each receipt
+  const receiptStatusMap = new Map<string, { payment_status: PaymentStatus; paid_amount: number; outstanding: number }>();
 
-  if (supplierIds.length > 0) {
-    const { data: txns } = await supabase
+  for (const receipt of data || []) {
+    const receiptId = receipt.id as string;
+    const total = Number(receipt.total);
+
+    // Get payments linked to THIS SPECIFIC receipt
+    const { data: receiptPayments } = await supabase
       .from('supplier_transactions')
-      .select('supplier_id, transaction_type, amount')
-      .in('supplier_id', supplierIds);
+      .select('amount, transaction_type')
+      .eq('reference_id', receiptId)
+      .eq('reference_type', 'PURCHASE');
 
-    for (const txn of txns || []) {
-      const sid = txn.supplier_id as string;
-      if (!supplierBalances[sid]) supplierBalances[sid] = { totalPurchases: 0, totalPayments: 0 };
-      if (txn.transaction_type === 'PURCHASE') supplierBalances[sid].totalPurchases += Number(txn.amount);
-      if (txn.transaction_type === 'PAYMENT' || txn.transaction_type === 'RETURN') supplierBalances[sid].totalPayments += Number(txn.amount);
-    }
-  }
-
-  const enriched = (data || []).map((receipt) => {
-    const bal = supplierBalances[receipt.supplier_id];
-    let paymentStatus: PaymentStatus = 'UNPAID';
     let paidAmount = 0;
-    let outstanding = Number(receipt.total);
-
-    if (bal) {
-      const ratio = bal.totalPurchases > 0 ? bal.totalPayments / bal.totalPurchases : 0;
-      // Distribute payments proportionally across receipts for this supplier
-      if (ratio >= 1) {
-        paymentStatus = 'PAID';
-        paidAmount = Number(receipt.total);
-        outstanding = 0;
-      } else if (ratio > 0) {
-        paymentStatus = 'PARTIAL';
-        paidAmount = Math.round(Number(receipt.total) * ratio);
-        outstanding = Number(receipt.total) - paidAmount;
+    for (const txn of receiptPayments || []) {
+      if (txn.transaction_type === 'PAYMENT') {
+        paidAmount += Number(txn.amount);
+      } else if (txn.transaction_type === 'RETURN') {
+        paidAmount -= Math.abs(Number(txn.amount));
       }
     }
 
-    return { ...receipt, payment_status: paymentStatus, paid_amount: paidAmount, outstanding };
+    paidAmount = Math.max(0, Math.round(paidAmount * 100) / 100); // Round to 2 decimals
+    const outstanding = Math.max(0, Math.round((total - paidAmount) * 100) / 100);
+
+    let paymentStatus: PaymentStatus = 'UNPAID';
+    if (outstanding < 0.01 && total > 0) {
+      paymentStatus = 'PAID';
+    } else if (paidAmount > 0.01 && outstanding > 0.01) {
+      paymentStatus = 'PARTIAL';
+    }
+
+    receiptStatusMap.set(receiptId, {
+      payment_status: paymentStatus,
+      paid_amount: paidAmount,
+      outstanding,
+    });
+  }
+
+  const enriched = (data || []).map((receipt) => {
+    const status = receiptStatusMap.get(receipt.id as string) || {
+      payment_status: 'UNPAID' as PaymentStatus,
+      paid_amount: 0,
+      outstanding: Number(receipt.total),
+    };
+
+    return { ...receipt, ...status };
   });
 
   const result = { data: enriched as GoodsReceiptWithStatus[], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
@@ -181,7 +224,38 @@ export async function fetchGoodsReceipt(id: string) {
     .eq('id', id)
     .single();
   if (error) throw error;
-  return data;
+
+  let paymentStatus: PaymentStatus = 'UNPAID';
+  let paidAmount = 0;
+  let outstanding = Number(data.total);
+  const total = Number(data.total);
+
+  // Get payments linked to THIS SPECIFIC receipt only
+  const { data: receiptPayments } = await supabase
+    .from('supplier_transactions')
+    .select('amount, transaction_type')
+    .eq('reference_id', id)
+    .eq('reference_type', 'PURCHASE');
+
+  paidAmount = 0;
+  for (const txn of receiptPayments || []) {
+    if (txn.transaction_type === 'PAYMENT') {
+      paidAmount += Number(txn.amount);
+    } else if (txn.transaction_type === 'RETURN') {
+      paidAmount -= Math.abs(Number(txn.amount));
+    }
+  }
+
+  paidAmount = Math.max(0, Math.round(paidAmount * 100) / 100); // Round to 2 decimals
+  outstanding = Math.max(0, Math.round((total - paidAmount) * 100) / 100);
+
+  if (outstanding < 0.01 && total > 0) {
+    paymentStatus = 'PAID';
+  } else if (paidAmount > 0.01 && outstanding > 0.01) {
+    paymentStatus = 'PARTIAL';
+  }
+
+  return { ...data, payment_status: paymentStatus, paid_amount: paidAmount, outstanding };
 }
 
 export async function receiveGoods(receipt: {

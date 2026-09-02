@@ -18,6 +18,7 @@ import type {
   SyncConflict,
   OfflineInventoryMovement,
   OfflineShift,
+  OfflineCheque,
 } from './types';
 
 /**
@@ -43,6 +44,9 @@ export class ERPOfflineDB extends Dexie {
 
   // Offline shifts
   offlineShifts!: Table<OfflineShift>;
+
+  // Cheque management
+  cheques!: Table<OfflineCheque>;
 
   // Sync infrastructure
   syncQueue!: Table<SyncQueueItem>;
@@ -91,6 +95,9 @@ export class ERPOfflineDB extends Dexie {
 
       // Offline shifts (created while disconnected)
       offlineShifts: 'id, user_id, status, opened_at, synced_at',
+
+      // Cheques (incoming & outgoing with maturity dates)
+      cheques: 'id, cheque_number, type, party_type, status, due_date, issue_date, created_at',
 
       // ===================== SYNC INFRASTRUCTURE =====================
 

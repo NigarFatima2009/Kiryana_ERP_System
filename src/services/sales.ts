@@ -2,44 +2,34 @@ import { supabase } from '../lib/supabase';
 import { offlineQuery } from '../lib/offlineQuery';
 import { generateOrderNumber } from '../utils/helpers';
 import { audit } from './audit';
+import { batchFetchInventory, batchFetchInventoryBatches, batchInsert, batchUpdate, batchFetchCustomers, batchFetchProfiles, batchFetchSalesReturns } from '../lib/queryOptimization';
 import type { Sale, SaleItem, SalePayment, CartItem, PaymentEntry } from '../types/database';
 
-// Search products for POS - reliable approach without complex joins
+// Search products for POS - optimized with batch queries
 export async function searchProductsForPOS(query: string) {
-  // Step 1: Search products
-  const { data: products, error } = await supabase
+  let q = supabase
     .from('products')
-    .select('*')
+    .select('*, categories(id, name), inventory(quantity, average_cost)')
     .eq('active', true)
-    .or(`name.ilike.%${query}%,sku.ilike.%${query}%,barcode.ilike.%${query}%`)
     .limit(50);
 
+  if (query && query.trim() && query.trim() !== '') {
+    q = q.or(`name.ilike.%${query}%,sku.ilike.%${query}%,barcode.ilike.%${query}%`);
+  }
+
+  const { data: products, error } = await q;
   if (error) throw error;
   if (!products || products.length === 0) return [];
 
-  // Step 2: Get inventory for found products
-  const productIds = products.map((p) => p.id);
-  const { data: inventory } = await supabase
-    .from('inventory')
-    .select('product_id, quantity')
-    .in('product_id', productIds);
-
-  // Step 3: Get categories
-  const catIds = [...new Set(products.map((p) => p.category_id).filter(Boolean))];
-  const { data: categories } = await supabase
-    .from('categories')
-    .select('id, name')
-    .in('id', catIds);
-
-  // Step 4: Merge data
-  const invMap = new Map((inventory || []).map((i) => [i.product_id, Number(i.quantity)]));
-  const catMap = new Map((categories || []).map((c) => [c.id, c.name]));
-
-  return products.map((p) => ({
-    ...p,
-    stock: invMap.get(p.id) || 0,
-    categories: { name: catMap.get(p.category_id) || '' },
-  }));
+  return products.map((p: any) => {
+    const inv = p.inventory;
+    const stockQty = Array.isArray(inv) ? (inv[0]?.quantity ?? 0) : (inv?.quantity ?? 0);
+    return {
+      ...p,
+      stock: Number(stockQty),
+      categories: p.categories || { name: '' },
+    };
+  });
 }
 
 async function getAvailableBatches(productId: string) {
@@ -56,7 +46,7 @@ async function getAvailableBatches(productId: string) {
   return (data || []).filter((b) => !b.expiry_date || b.expiry_date >= now);
 }
 
-// Complete Sale
+// Complete Sale - OPTIMIZED with batch queries
 export async function completeSale(params: {
   customer_id?: string;
   cart: CartItem[];
@@ -74,17 +64,18 @@ export async function completeSale(params: {
     throw new Error(`Payment total (${totalPayments}) does not match sale total (${total})`);
   }
 
-  // Validate stock
+  // Batch validate stock for all items at once
+  const productIds = cart.map(item => item.product.id);
+  const inventoryMap = await batchFetchInventory(productIds);
+  
   for (const item of cart) {
-    const { data: inv } = await supabase.from('inventory').select('quantity').eq('product_id', item.product.id).single();
+    const inv = inventoryMap.get(item.product.id);
     if (!inv || Number(inv.quantity) < item.quantity) {
       throw new Error(`Insufficient stock for ${item.product.name}. Available: ${inv?.quantity || 0}`);
     }
   }
 
   const invoiceNumber = generateOrderNumber('INV');
-  
-  // Get current user and shift
   const { data: { user } } = await supabase.auth.getUser();
   
   let shiftId: string | null = null;
@@ -95,7 +86,6 @@ export async function completeSale(params: {
   if (!rpcError && currentShift) {
     shiftId = (currentShift as any)?.id || null;
   } else {
-    // Fallback: Query directly for THIS user only
     const { data } = await supabase
       .from('cashier_shifts')
       .select('id')
@@ -122,12 +112,21 @@ export async function completeSale(params: {
 
   if (saleError) throw saleError;
 
+  // Batch fetch all needed data
+  const batchesMap = await batchFetchInventoryBatches(productIds);
+  
   let totalCogs = 0;
+  const saleItems: any[] = [];
+  const inventoryUpdates: Array<{ id: string; quantity: number }> = [];
+  const batchUpdates: any[] = [];
+  const movementInserts: any[] = [];
 
   for (const item of cart) {
     const lineTotal = item.line_total;
     let remainingQty = item.quantity;
-    const batches = await getAvailableBatches(item.product.id);
+    const batches = batchesMap.get(item.product.id) || [];
+    const inv = inventoryMap.get(item.product.id)!;
+    const currentQty = Number(inv.quantity);
 
     let batchCogs = 0;
     for (const batch of batches) {
@@ -135,40 +134,22 @@ export async function completeSale(params: {
       const deductFromBatch = Math.min(remainingQty, Number(batch.remaining_quantity));
       batchCogs += deductFromBatch * Number(batch.purchase_cost);
 
-      await supabase.from('inventory_batches').update({ remaining_quantity: Number(batch.remaining_quantity) - deductFromBatch }).eq('id', batch.id);
+      batchUpdates.push({
+        id: batch.id,
+        remaining_quantity: Number(batch.remaining_quantity) - deductFromBatch,
+      });
       remainingQty -= deductFromBatch;
     }
 
-    // Get current inventory
-    const { data: invData } = await supabase.from('inventory').select('quantity, average_cost').eq('product_id', item.product.id).single();
-    const currentQty = Number(invData?.quantity || 0);
     const deductionQty = item.quantity;
-    const avgCost = Number(invData?.average_cost || item.product.purchase_price);
+    const avgCost = Number(inv.average_cost || item.product.purchase_price);
     const actualCogs = deductionQty * avgCost;
     totalCogs += actualCogs;
 
-    // Create stock movement for every sale item
-    const movementData: Record<string, unknown> = {
-      product_id: item.product.id,
-      movement_type: 'SALE',
-      quantity_change: -deductionQty,
-      unit_cost: avgCost,
-      reference_type: 'SALE',
-      reference_id: sale.id,
-    };
-    // Only add batch_id if we actually have one
-    if (batches.length > 0 && batches[0]?.id) {
-      movementData.batch_id = batches[0].id;
-    }
-    const { error: movementError } = await supabase.from('inventory_movements').insert(movementData);
-    if (movementError) {
-      throw new Error(`Failed to create stock movement: ${movementError.message}`);
-    }
-
-    await supabase.from('sale_items').insert({
+    saleItems.push({
       sale_id: sale.id,
       product_id: item.product.id,
-      quantity: item.quantity,
+      quantity: deductionQty,
       unit_price: item.unit_price,
       discount: item.discount,
       tax: item.tax_amount,
@@ -176,37 +157,63 @@ export async function completeSale(params: {
       cogs: actualCogs,
     });
 
-    // ✅ CRITICAL: Deduct quantity (subtract, not add)
+    movementInserts.push({
+      product_id: item.product.id,
+      movement_type: 'SALE',
+      quantity_change: -deductionQty,
+      unit_cost: avgCost,
+      reference_type: 'SALE',
+      reference_id: sale.id,
+      batch_id: batches.length > 0 ? batches[0].id : null,
+    });
+
     const newInventoryQty = currentQty - deductionQty;
     if (newInventoryQty < 0) {
-      throw new Error(`Insufficient stock for ${item.product.name}. Available: ${currentQty}, Needed: ${deductionQty}`);
+      throw new Error(`Insufficient stock for ${item.product.name}`);
     }
     
-    const { error: invError } = await supabase
-      .from('inventory')
-      .update({ quantity: newInventoryQty })
-      .eq('product_id', item.product.id);
-    
-    if (invError) {
-      throw new Error(`Failed to update inventory for ${item.product.name}: ${invError.message}`);
-    }
-    
-    console.log(`[completeSale] Inventory updated for ${item.product.name}: ${currentQty} → ${newInventoryQty}`);
-
+    inventoryUpdates.push({
+      id: item.product.id,
+      quantity: newInventoryQty,
+    });
   }
 
-  await supabase.from('sales').update({ cogs: totalCogs }).eq('id', sale.id);
+  // Execute all batch operations in parallel
+  await Promise.all([
+    batchInsert('sale_items', saleItems),
+    batchInsert('inventory_movements', movementInserts),
+    batchUpdate('inventory_batches', batchUpdates.map(u => ({ id: u.id, data: { remaining_quantity: u.remaining_quantity } }))),
+    supabase.from('sales').update({ cogs: totalCogs }).eq('id', sale.id),
+  ]);
 
-  for (const payment of payments) {
-    await supabase.from('sale_payments').insert({ sale_id: sale.id, payment_method: payment.method, amount: payment.amount, reference: payment.reference || null });
+  // Update inventory quantities
+  for (const update of inventoryUpdates) {
+    await supabase
+      .from('inventory')
+      .update({ quantity: update.quantity })
+      .eq('product_id', update.id);
+  }
+
+  // Batch insert payments
+  if (payments.length > 0) {
+    await batchInsert('sale_payments', payments.map(p => ({
+      sale_id: sale.id,
+      payment_method: p.method,
+      amount: p.amount,
+      reference: p.reference || null,
+    })));
   }
 
   if (customer_id) {
     const creditAmount = payments.find((p) => p.method === 'CUSTOMER_CREDIT')?.amount || 0;
     if (creditAmount > 0) {
       await supabase.from('customer_transactions').insert({
-        customer_id, transaction_type: 'CREDIT_SALE', amount: creditAmount,
-        reference_type: 'SALE', reference_id: sale.id, narration: `Credit sale - ${invoiceNumber}`,
+        customer_id,
+        transaction_type: 'CREDIT_SALE',
+        amount: creditAmount,
+        reference_type: 'SALE',
+        reference_id: sale.id,
+        narration: `Credit sale - ${invoiceNumber}`,
       });
     }
   }
@@ -220,7 +227,7 @@ export async function completeSale(params: {
     }).select().single();
 
     if (je) {
-      const lines: { journal_entry_id: string; account_id: string; debit: number; credit: number }[] = [];
+      const lines: any[] = [];
       lines.push({ journal_entry_id: je.id, account_id: accountMap.get('SALES') || '', debit: 0, credit: total });
       if (totalCogs > 0) {
         lines.push({ journal_entry_id: je.id, account_id: accountMap.get('COGS') || '', debit: totalCogs, credit: 0 });
@@ -233,11 +240,10 @@ export async function completeSale(params: {
           lines.push({ journal_entry_id: je.id, account_id: accountMap.get('CASH') || '', debit: payment.amount, credit: 0 });
         }
       }
-      if (lines.length > 0) await supabase.from('journal_entry_lines').insert(lines);
+      if (lines.length > 0) await batchInsert('journal_entry_lines', lines);
     }
   }
 
-  // Create audit log for the sale
   await audit.saleCreated(sale.id, {
     invoice_number: invoiceNumber,
     total,
@@ -250,7 +256,7 @@ export async function completeSale(params: {
   return sale as Sale;
 }
 
-// Fetch sales history
+// Fetch sales history - OPTIMIZED
 export async function fetchSales(params?: { page?: number; pageSize?: number; customer_id?: string }) {
   const page = params?.page || 1;
   const pageSize = params?.pageSize || 20;
@@ -268,39 +274,49 @@ export async function fetchSales(params?: { page?: number; pageSize?: number; cu
   const { data: salesData, error, count } = await query;
   if (error) throw error;
 
-  // Fetch customers
-  const custIds = [...new Set((salesData || []).map((s) => s.customer_id).filter(Boolean))];
-  const { data: customers } = await supabase.from('customers').select('id, name').in('id', custIds);
-  const custMap = new Map((customers || []).map((c) => [c.id, c.name]));
+  if (!salesData || salesData.length === 0) {
+    return { data: [], count: 0, page, pageSize, totalPages: 0 };
+  }
 
-  // Fetch profiles for cashiers (created_by field)
-  const cashierIds = [...new Set((salesData || []).map((s) => s.created_by).filter(Boolean))];
-  const { data: profiles } = cashierIds.length > 0 
-    ? await supabase.from('profiles').select('id, email, full_name').in('id', cashierIds)
-    : { data: [] };
-  const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
+  // Batch fetch all related data in parallel
+  const custIds = salesData.map((s) => s.customer_id).filter(Boolean);
+  const cashierIds = salesData.map((s) => s.created_by).filter(Boolean);
+  const saleIds = salesData.map((sale) => sale.id);
 
-  const saleIds = (salesData || []).map((sale) => sale.id);
-  const { data: returnData } = saleIds.length > 0
-    ? await supabase.from('sales_returns').select('sale_id, total, refund_method').in('sale_id', saleIds)
-    : { data: [] };
-  const returnMap = new Map<string, { total: number; refunds: Array<{ total: number; refund_method: string }> }>();
-  (returnData || []).forEach((saleReturn: any) => {
-    const entry = returnMap.get(saleReturn.sale_id) || { total: 0, refunds: [] };
-    const amount = Number(saleReturn.total || 0);
-    entry.total += amount;
-    entry.refunds.push({ total: amount, refund_method: saleReturn.refund_method });
-    returnMap.set(saleReturn.sale_id, entry);
+  const [customersMap, profilesMap, returnsMap, paymentsRes, chequesRes] = await Promise.all([
+    batchFetchCustomers(custIds),
+    batchFetchProfiles(cashierIds),
+    batchFetchSalesReturns(saleIds),
+    supabase.from('sale_payments').select('*').in('sale_id', saleIds),
+    supabase.from('cheques').select('*').in('reference_sale_id', saleIds),
+  ]);
+
+  const paymentsMap = new Map<string, any[]>();
+  paymentsRes.data?.forEach((p) => {
+    const list = paymentsMap.get(p.sale_id) || [];
+    list.push(p);
+    paymentsMap.set(p.sale_id, list);
   });
 
-  const merged = (salesData || []).map((s) => ({
-    ...s,
-    customers: s.customer_id ? { name: custMap.get(s.customer_id) || 'Unknown' } : null,
-    profiles: s.created_by ? profileMap.get(s.created_by) || null : null,
-    returned_total: returnMap.get(s.id)?.total || 0,
-    net_total: Math.max(0, Number(s.total) - (returnMap.get(s.id)?.total || 0)),
-    returns: returnMap.get(s.id)?.refunds || [],
-  }));
+  const chequesMap = new Map<string, any>();
+  chequesRes.data?.forEach((c) => {
+    if (c.reference_sale_id) chequesMap.set(c.reference_sale_id, c);
+  });
+
+  const merged = (salesData || []).map((s) => {
+    const salePayments = paymentsMap.get(s.id) || [];
+    const cheque = chequesMap.get(s.id) || null;
+    return {
+      ...s,
+      sale_payments: salePayments,
+      cheque,
+      customers: s.customer_id ? customersMap.get(s.customer_id) || null : null,
+      profiles: s.created_by ? profilesMap.get(s.created_by) || null : null,
+      returned_total: returnsMap.get(s.id)?.reduce((sum: number, r: any) => sum + r.total, 0) || 0,
+      net_total: Math.max(0, Number(s.total) - (returnsMap.get(s.id)?.reduce((sum: number, r: any) => sum + r.total, 0) || 0)),
+      returns: returnsMap.get(s.id) || [],
+    };
+  });
 
   const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
   return offlineQuery(`sales-${page}`, async () => result);
@@ -716,19 +732,103 @@ export async function processSaleReturn(params: {
   sale_id: string; customer_id?: string; reason: string; refund_method: string;
   items: { sale_item_id: string; quantity: number; amount: number }[];
 }) {
-  const { data, error } = await supabase.rpc('create_sales_return', {
-    p_sale_id: params.sale_id,
-    p_reason: params.reason,
-    p_refund_method: params.refund_method,
-    p_items: params.items.map(item => ({
+  // Pure JS implementation — no RPC. Avoids 406/double-restoration issues.
+  const returnNumber = generateOrderNumber('SR');
+  const totalRefund = params.items.reduce((sum, i) => sum + i.amount, 0);
+
+  console.log('[SalesReturn] Processing return:', returnNumber, 'items:', params.items.length, 'total:', totalRefund);
+
+  // 1. Create the sales_returns header
+  const { data: newReturn, error: retError } = await supabase
+    .from('sales_returns')
+    .insert({
+      sale_id: params.sale_id,
+      return_number: returnNumber,
+      reason: params.reason,
+      refund_method: params.refund_method,
+      total: totalRefund,
+    })
+    .select()
+    .single();
+
+  if (retError) throw retError;
+
+  // 2. For each returned item: create return item record, restore inventory, log movement
+  for (const item of params.items) {
+    // Get the sale item to find the product
+    const { data: saleItem } = await supabase
+      .from('sale_items')
+      .select('product_id, quantity')
+      .eq('id', item.sale_item_id)
+      .single();
+
+    if (!saleItem?.product_id) {
+      console.warn('[SalesReturn] Could not find product for sale item:', item.sale_item_id);
+      continue;
+    }
+
+    // Create the sales_return_items record
+    await supabase.from('sales_return_items').insert({
+      sales_return_id: newReturn.id,
       sale_item_id: item.sale_item_id,
       quantity: item.quantity,
-    })),
-  });
+      amount: item.amount,
+    });
 
-  if (error) throw error;
-  if (!data?.success) throw new Error(data?.error || 'Unable to process sales return');
-  return data as { return_id: string; return_number: string; total: number; fully_returned: boolean };
+    // Restore inventory — add the returned quantity back
+    const { data: inv } = await supabase
+      .from('inventory')
+      .select('quantity')
+      .eq('product_id', saleItem.product_id)
+      .single();
+
+    if (inv) {
+      const newQty = Number(inv.quantity) + Number(item.quantity);
+      await supabase
+        .from('inventory')
+        .update({ quantity: newQty })
+        .eq('product_id', saleItem.product_id);
+      console.log(`[SalesReturn] Restored ${item.quantity} units of ${saleItem.product_id}: ${inv.quantity} → ${newQty}`);
+    } else {
+      await supabase
+        .from('inventory')
+        .insert({ product_id: saleItem.product_id, quantity: Number(item.quantity) });
+    }
+
+    // Log the stock movement
+    await supabase.from('inventory_movements').insert({
+      product_id: saleItem.product_id,
+      movement_type: 'SALE_RETURN',
+      quantity_change: Number(item.quantity),
+      reference_type: 'SALES_RETURN',
+      reference_id: newReturn.id,
+      narration: `Return ${returnNumber} — ${item.quantity} units restored`,
+    });
+  }
+
+  // 3. Update the sale status if fully returned
+  const { data: existingReturns } = await supabase
+    .from('sales_returns')
+    .select('total')
+    .eq('sale_id', params.sale_id);
+
+  const { data: sale } = await supabase
+    .from('sales')
+    .select('total')
+    .eq('id', params.sale_id)
+    .single();
+
+  if (sale && existingReturns) {
+    const totalReturned = existingReturns.reduce((sum, r) => sum + Number(r.total), 0);
+    const newStatus = totalReturned >= Number(sale.total) - 0.01 ? 'RETURNED' : 'COMPLETED';
+    await supabase
+      .from('sales')
+      .update({ status: newStatus })
+      .eq('id', params.sale_id);
+  }
+
+  console.log('[SalesReturn] Return processed successfully:', returnNumber);
+  return { return_id: newReturn.id, return_number: returnNumber, total: totalRefund };
 }
 
 // Quick return function - return entire sale

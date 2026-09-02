@@ -55,9 +55,9 @@ export function ProductsPage() {
     { key: 'purchase_price', header: 'Purchase Price', render: (row) => formatCurrency(row.purchase_price as number) },
     { key: 'selling_price', header: 'Selling Price', render: (row) => formatCurrency(row.selling_price as number) },
     { key: 'stock', header: 'Stock', render: (row) => {
-      const inv = row.inventory as { quantity: number }[] | undefined;
-      const qty = inv?.[0]?.quantity ?? 0;
-      return <span className={`font-medium ${qty <= 0 ? 'text-red-600' : ''}`}>{qty}</span>;
+      const inv = row.inventory as { quantity: number }[] | { quantity: number } | undefined;
+      const qty = Array.isArray(inv) ? (inv[0]?.quantity ?? 0) : (inv?.quantity ?? 0);
+      return <span className={`font-medium ${qty <= 0 ? 'text-red-600' : 'text-gray-900'}`}>{qty}</span>;
     }},
     { key: 'actions', header: '', render: (row) => (
       <div className="flex gap-2">

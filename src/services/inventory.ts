@@ -1,16 +1,26 @@
 import { supabase } from '../lib/supabase';
 import { offlineQuery } from '../lib/offlineQuery';
+import { inventoryCache } from '../lib/inventoryCache';
+import { batchFetchProducts, batchFetchProfiles } from '../lib/queryOptimization';
 import type { Inventory, InventoryBatch, InventoryMovement } from '../types/database';
 
 // ==================== INVENTORY ====================
 
+// OPTIMIZED: Fetch inventory with batch product/category loading and smart caching
 export async function fetchInventory(params?: { search?: string; lowStock?: boolean; page?: number; pageSize?: number }) {
   const page = params?.page || 1;
   const pageSize = params?.pageSize || 50;
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
 
-  // Step 1: Fetch inventory with count
+  // Check cache first
+  const cacheKey = params?.search || params?.lowStock ? 'search' : 'default';
+  const cached = inventoryCache.getPage(page, pageSize, cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  // Fetch inventory with count
   const { data: inventoryData, error: invError, count } = await supabase
     .from('inventory')
     .select('*', { count: 'exact' })
@@ -20,37 +30,42 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
   if (invError) throw invError;
 
   if (!inventoryData || inventoryData.length === 0) {
-    return { data: [], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+    const result = { data: [], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+    inventoryCache.setPage(result, page, pageSize, cacheKey);
+    return result;
   }
 
-  // Step 2: Fetch products for these inventory items (only active products)
+  // Batch fetch all products and categories in parallel
   const productIds = inventoryData.map((i) => i.product_id);
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, name, sku, barcode, unit, purchase_price, selling_price, reorder_level, category_id, active')
-    .in('id', productIds)
-    .eq('active', true); // Only show active products
+  const productsMap = await batchFetchProducts(productIds);
 
-  // Step 3: Fetch categories
-  const categoryIds = (products || []).map((p) => p.category_id).filter(Boolean);
-  const { data: categories } = await supabase
-    .from('categories')
-    .select('id, name')
-    .in('id', categoryIds);
+  // Extract category IDs from products
+  const categoryIds: string[] = [];
+  for (const product of productsMap.values()) {
+    if (product.category_id) categoryIds.push(product.category_id);
+  }
 
-  // Step 4: Merge data
-  const productMap = new Map((products || []).map((p) => [p.id, p]));
+  // Batch fetch categories
+  const uniqueCategoryIds = [...new Set(categoryIds)];
+  const { data: categories } = uniqueCategoryIds.length > 0
+    ? await supabase.from('categories').select('id, name').in('id', uniqueCategoryIds)
+    : { data: [] };
+
   const categoryMap = new Map((categories || []).map((c) => [c.id, c.name]));
 
+  // Merge data
   let merged = inventoryData
-    .filter((inv) => productMap.has(inv.product_id)) // Only include inventory for active products
+    .filter((inv) => productsMap.has(inv.product_id))
     .map((inv) => {
-      const product = productMap.get(inv.product_id) || null;
+      const product = productsMap.get(inv.product_id);
       const categoryName = product?.category_id ? categoryMap.get(product.category_id) : null;
-      return { ...inv, products: product ? { ...product, categories: categoryName ? { name: categoryName } : null } : null };
+      return {
+        ...inv,
+        products: product ? { ...product, categories: categoryName ? { name: categoryName } : null } : null,
+      };
     });
 
-  // Step 5: Apply search filter
+  // Apply search filter
   if (params?.search) {
     const s = params.search.toLowerCase();
     merged = merged.filter((item) => {
@@ -62,7 +77,7 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
     });
   }
 
-  // Step 6: Apply low stock filter
+  // Apply low stock filter
   if (params?.lowStock) {
     merged = merged.filter((item) => {
       const p = item.products as Record<string, unknown> | null;
@@ -71,11 +86,22 @@ export async function fetchInventory(params?: { search?: string; lowStock?: bool
   }
 
   const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
+  
+  // Cache with appropriate TTL
+  const ttl = params?.lowStock ? 1000 * 60 * 10 : 1000 * 60 * 5; // Longer TTL for low stock
+  inventoryCache.setPage(result, page, pageSize, cacheKey, ttl);
+
   return offlineQuery(`inventory-${page}`, async () => result);
 }
 
+// OPTIMIZED: Fetch batches with batch product loading and smart caching
 export async function fetchBatches(params?: { product_id?: string; expiringSoon?: boolean }) {
-  // Step 1: Fetch batches
+  // Check cache first
+  const cached = inventoryCache.getBatch(params?.product_id, params?.expiringSoon);
+  if (cached) {
+    return cached;
+  }
+
   let query = supabase
     .from('inventory_batches')
     .select('*')
@@ -87,27 +113,36 @@ export async function fetchBatches(params?: { product_id?: string; expiringSoon?
   if (params?.expiringSoon) {
     const thirtyDaysFromNow = new Date();
     thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-    query = query.not('expiry_date', 'is', null).lte('expiry_date', thirtyDaysFromNow.toISOString().split('T')[0]);
+    query = query
+      .not('expiry_date', 'is', null)
+      .lte('expiry_date', thirtyDaysFromNow.toISOString().split('T')[0]);
   }
 
   const { data: batchData, error } = await query;
   if (error) throw error;
 
-  if (!batchData || batchData.length === 0) return [];
+  if (!batchData || batchData.length === 0) {
+    const result: any[] = [];
+    inventoryCache.setBatch(result, params?.product_id, params?.expiringSoon);
+    return result;
+  }
 
-  // Step 2: Fetch products for batches (include all — even deactivated)
+  // Batch fetch all products at once
   const productIds = [...new Set(batchData.map((b) => b.product_id))];
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, name, sku, active')
-    .in('id', productIds);
+  const productMap = await batchFetchProducts(productIds);
 
-  const productMap = new Map((products || []).map((p) => [p.id, p]));
+  const result = batchData.map((b) => ({
+    ...b,
+    products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' },
+  }));
 
-  const result = batchData.map((b) => ({ ...b, products: productMap.get(b.product_id) || { name: 'Unknown', sku: '' } }));
+  // Cache with longer TTL (batches change less frequently)
+  inventoryCache.setBatch(result, params?.product_id, params?.expiringSoon, 1000 * 60 * 15);
+
   return offlineQuery('batches', async () => result);
 }
 
+// OPTIMIZED: Fetch stock movements with batch product/profile loading
 export async function fetchStockMovements(params?: { product_id?: string; movement_type?: string; page?: number; pageSize?: number }) {
   const page = params?.page || 1;
   const pageSize = params?.pageSize || 50;
@@ -130,29 +165,20 @@ export async function fetchStockMovements(params?: { product_id?: string; moveme
     return { data: [], count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
   }
 
-  // Fetch products (include all — even deactivated for history)
+  // Batch fetch products and profiles in parallel
   const productIds = [...new Set(movementData.map((m) => m.product_id))];
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, name, sku, active')
-    .in('id', productIds);
-
-  const productMap = new Map((products || []).map((p) => [p.id, p]));
-
-  // Fetch profiles (cashier info) for created_by field
   const profileIds = [...new Set(movementData.map((m) => m.created_by).filter(Boolean))];
-  const { data: profiles } = profileIds.length > 0
-    ? await supabase.from('profiles').select('id, full_name, email').in('id', profileIds)
-    : { data: [] };
 
-  const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
+  const [productMap, profileMap] = await Promise.all([
+    batchFetchProducts(productIds),
+    batchFetchProfiles(profileIds),
+  ]);
 
-  const merged = movementData
-    .map((m) => ({
-      ...m,
-      products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
-      profiles: m.created_by ? profileMap.get(m.created_by) || null : null,
-    }));
+  const merged = movementData.map((m) => ({
+    ...m,
+    products: productMap.get(m.product_id) || { name: 'Unknown', sku: '' },
+    profiles: m.created_by ? profileMap.get(m.created_by) || null : null,
+  }));
 
   const result = { data: merged, count: count || 0, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) };
   return offlineQuery(`inventory-${page}`, async () => result);
@@ -260,7 +286,7 @@ export async function getUrgentReorders(): Promise<ReorderRecommendation[]> {
 
 /**
  * Fallback: Query low-stock products directly from inventory + products tables
- * This is used when the reorder_recommendations view is not available or returns empty
+ * OPTIMIZED: Batch fetch all products at once instead of individual queries
  */
 export async function getLowStockProductsFallback(): Promise<ReorderRecommendation[]> {
   try {
@@ -272,17 +298,16 @@ export async function getLowStockProductsFallback(): Promise<ReorderRecommendati
     if (invError) throw invError;
     if (!inventory || inventory.length === 0) return [];
 
-    // Fetch products with reorder_level set
+    // Batch fetch all products with reorder_level set
     const productIds = inventory.map((i) => i.product_id);
-    const { data: products, error: prodError } = await supabase
-      .from('products')
-      .select('id, name, category_id, reorder_level, purchase_price, active')
-      .in('id', productIds)
-      .eq('active', true)
-      .gt('reorder_level', 0); // Only products with reorder_level > 0
+    const productsMap = await batchFetchProducts(productIds);
 
-    if (prodError) throw prodError;
-    if (!products || products.length === 0) return [];
+    // Filter products with reorder level > 0 and active
+    const productsWithReorderLevel = Array.from(productsMap.values()).filter(
+      (p) => p && Number(p.reorder_level || 0) > 0
+    );
+
+    if (productsWithReorderLevel.length === 0) return [];
 
     // Fetch one active supplier for fallback
     const { data: suppliers } = await supabase
@@ -298,44 +323,44 @@ export async function getLowStockProductsFallback(): Promise<ReorderRecommendati
     // Build inventory map
     const invMap = new Map(inventory.map((i) => [i.product_id, Number(i.quantity) || 0]));
 
-    // Filter products that are below reorder level
-    const lowStockProducts = products.filter((p) => {
-      const qty = invMap.get(p.id) || 0;
-      const reorderLevel = Number(p.reorder_level || 0);
-      return qty < reorderLevel; // Below reorder level
-    });
+    // Filter products below reorder level and build recommendations
+    const lowStockRecs = productsWithReorderLevel
+      .filter((p) => {
+        const qty = invMap.get(p.id) || 0;
+        const reorderLevel = Number(p.reorder_level || 0);
+        return qty < reorderLevel;
+      })
+      .map((p) => {
+        const qty = invMap.get(p.id) || 0;
+        const reorderLevel = Number(p.reorder_level || 0);
+        const purchasePrice = Number(p.purchase_price || 0);
+        const recommendedQty = Math.ceil(reorderLevel * 1.5);
 
-    if (lowStockProducts.length === 0) return [];
+        return {
+          product_id: p.id,
+          product_name: p.name,
+          category_name: '',
+          current_stock: qty,
+          daily_usage: 5,
+          lead_time_days: 3,
+          reorder_level: reorderLevel,
+          recommended_quantity: recommendedQty,
+          suggested_supplier_id: defaultSupplierId,
+          supplier_name: defaultSupplierName,
+          supplier_phone: defaultSupplierPhone,
+          last_purchase_price: purchasePrice,
+          estimated_cost: recommendedQty * purchasePrice,
+          reason: `Below configured reorder level of ${reorderLevel}`,
+          priority: (qty === 0 ? 'URGENT' : 'NORMAL') as 'URGENT' | 'NORMAL',
+        };
+      })
+      .sort((a, b) => {
+        // Sort: URGENT first, then by lowest stock
+        if (a.priority !== b.priority) return a.priority === 'URGENT' ? -1 : 1;
+        return a.current_stock - b.current_stock;
+      });
 
-    // Build recommendations
-    return lowStockProducts.map((p) => {
-      const qty = invMap.get(p.id) || 0;
-      const reorderLevel = Number(p.reorder_level || 0);
-      const purchasePrice = Number(p.purchase_price || 0);
-      const recommendedQty = Math.ceil(reorderLevel * 1.5);
-      
-      return {
-        product_id: p.id,
-        product_name: p.name,
-        category_name: '',
-        current_stock: qty,
-        daily_usage: 5,
-        lead_time_days: 3,
-        reorder_level: reorderLevel,
-        recommended_quantity: recommendedQty,
-        suggested_supplier_id: defaultSupplierId,
-        supplier_name: defaultSupplierName,
-        supplier_phone: defaultSupplierPhone,
-        last_purchase_price: purchasePrice,
-        estimated_cost: recommendedQty * purchasePrice,
-        reason: `Below configured reorder level of ${reorderLevel}`,
-        priority: (qty === 0 ? 'URGENT' : 'NORMAL') as 'URGENT' | 'NORMAL',
-      };
-    }).sort((a, b) => {
-      // Sort: URGENT first, then by lowest stock
-      if (a.priority !== b.priority) return a.priority === 'URGENT' ? -1 : 1;
-      return a.current_stock - b.current_stock;
-    });
+    return lowStockRecs;
   } catch (err) {
     console.error('❌ Fallback low-stock query failed:', err);
     return [];
