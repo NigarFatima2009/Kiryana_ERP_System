@@ -283,8 +283,8 @@ export default function App() {
       <OfflineInitializer />
       <OfflineSyncManager />
 
-      {/* Offline Data Viewer (for development/debugging) */}
-      {import.meta.env.DEV && <OfflineDataViewer />}
+      {/* Offline Data Viewer (visible on all environments for debugging) */}
+      <OfflineDataViewer />
 
       <Routes>
         <Route path="/login" element={!session ? <LoginPage /> : <Navigate to="/" replace />} />
