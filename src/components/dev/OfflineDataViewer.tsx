@@ -56,33 +56,24 @@ export function OfflineDataViewer() {
     setLoading(false);
   };
 
-  // Load data when panel opens
+  // Load data when panel first opens
   useEffect(() => {
     if (isOpen && expanded === 'none') {
       loadData();
       setExpanded('products');
     }
-  }, [isOpen]);
+  }, [isOpen, expanded]);
 
-  // Auto-refresh data when coming back online or every 5 seconds while open
+  // Refresh when network comes back online or sales change
   useEffect(() => {
     if (!isOpen) return;
-    const id = setInterval(() => {
-      loadData();
-    }, 5000);
-    return () => clearInterval(id);
-  }, [isOpen]);
 
-  // Also refresh when network status changes
-  useEffect(() => {
-    const handleOnline = () => {
-      if (isOpen) loadData();
-    };
-    const handleOfflineSalesChanged = () => {
-      if (isOpen) loadData();
-    };
+    const handleOnline = () => loadData();
+    const handleOfflineSalesChanged = () => loadData();
+
     window.addEventListener('online', handleOnline);
     window.addEventListener(OFFLINE_SALES_CHANGED_EVENT, handleOfflineSalesChanged);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener(OFFLINE_SALES_CHANGED_EVENT, handleOfflineSalesChanged);
